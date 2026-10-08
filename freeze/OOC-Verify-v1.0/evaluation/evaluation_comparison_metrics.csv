@@ -1,0 +1,4 @@
+configuration,cases,accuracy,precision,recall,f1,TN,FP,FN,TP
+alignment_only,10,0.6,0.6,1.0,0.75,0,4,0,6
+mllm_only,10,1.0,1.0,1.0,1.0,4,0,0,6
+proposed,10,1.0,1.0,1.0,1.0,4,0,0,6

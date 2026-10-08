@@ -1,0 +1,11 @@
+image_file,caption,ground_truth,case_type
+backend\test_image.jpg,A person wearing a green shirt,Genuine,matched
+backend\test_image.jpg,A person with spectacles,Genuine,matched
+backend\test_image.jpg,A dog running through a forest,Misleading,visual_mismatch
+backend\test_image.jpg,A person wearing a red shirt,Misleading,visual_mismatch
+backend\test_image.jpg,A person standing in the image,Misleading,visual_mismatch
+news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,G7 to release 100 million barrels of oil and diesel will it curb prices,Misleading,out_of_context
+news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A hand is holding a green fuel pump nozzle,Genuine,matched
+news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A person is walking through a forest,Misleading,visual_mismatch
+news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A fuel pump is visible in the image,Genuine,matched
+news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,The image shows a dog running through a forest,Misleading,visual_mismatch

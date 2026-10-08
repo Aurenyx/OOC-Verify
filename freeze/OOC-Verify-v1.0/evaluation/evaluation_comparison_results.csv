@@ -1,0 +1,31 @@
+id,image_file,caption,ground_truth,configuration,prediction,decision_confidence,clip_alignment,qwen_prediction,case_type
+,backend\test_image.jpg,A person wearing a green shirt,Genuine,alignment_only,Misleading,0.7472259392260472,0.2354300618171692,,matched
+,backend\test_image.jpg,A person wearing a green shirt,Genuine,mllm_only,Genuine,0.8,,Genuine,matched
+,backend\test_image.jpg,A person wearing a green shirt,Genuine,proposed,Genuine,0.6,0.2354300618171692,Genuine,matched
+,backend\test_image.jpg,A person with spectacles,Genuine,alignment_only,Misleading,0.6469656301990455,0.2600958049297333,,matched
+,backend\test_image.jpg,A person with spectacles,Genuine,mllm_only,Genuine,0.8,,Genuine,matched
+,backend\test_image.jpg,A person with spectacles,Genuine,proposed,Genuine,0.6,0.2600958049297333,Genuine,matched
+,backend\test_image.jpg,A dog running through a forest,Misleading,alignment_only,Misleading,0.9675491419543003,0.1162051111459732,,visual_mismatch
+,backend\test_image.jpg,A dog running through a forest,Misleading,mllm_only,Misleading,0.8,,Misleading,visual_mismatch
+,backend\test_image.jpg,A dog running through a forest,Misleading,proposed,Misleading,0.7935,0.1162051111459732,Misleading,visual_mismatch
+,backend\test_image.jpg,A person wearing a red shirt,Misleading,alignment_only,Misleading,0.8069502809896053,0.21755830943584442,,visual_mismatch
+,backend\test_image.jpg,A person wearing a red shirt,Misleading,mllm_only,Misleading,0.8,,Misleading,visual_mismatch
+,backend\test_image.jpg,A person wearing a red shirt,Misleading,proposed,Misleading,0.7614,0.21755830943584442,Misleading,visual_mismatch
+,backend\test_image.jpg,A person standing in the image,Misleading,alignment_only,Misleading,0.721006710396491,0.242363840341568,,visual_mismatch
+,backend\test_image.jpg,A person standing in the image,Misleading,mllm_only,Misleading,0.8,,Misleading,visual_mismatch
+,backend\test_image.jpg,A person standing in the image,Misleading,proposed,Misleading,0.7442,0.242363840341568,Misleading,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,G7 to release 100 million barrels of oil and diesel will it curb prices,Misleading,alignment_only,Misleading,0.5573643775000325,0.27945390343666077,,out_of_context
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,G7 to release 100 million barrels of oil and diesel will it curb prices,Misleading,mllm_only,Misleading,0.8,,Misleading,out_of_context
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,G7 to release 100 million barrels of oil and diesel will it curb prices,Misleading,proposed,Misleading,0.6462,0.27945390343666077,Misleading,out_of_context
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A hand is holding a green fuel pump nozzle,Genuine,alignment_only,Misleading,0.5084077172744192,0.28960809111595154,,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A hand is holding a green fuel pump nozzle,Genuine,mllm_only,Genuine,0.8,,Genuine,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A hand is holding a green fuel pump nozzle,Genuine,proposed,Genuine,0.6,0.28960809111595154,Genuine,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A person is walking through a forest,Misleading,alignment_only,Misleading,0.9662451729701057,0.11830700933933258,,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A person is walking through a forest,Misleading,mllm_only,Misleading,0.8,,Misleading,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A person is walking through a forest,Misleading,proposed,Misleading,0.7932,0.11830700933933258,Misleading,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A fuel pump is visible in the image,Genuine,alignment_only,Misleading,0.5790401950758732,0.2748956084251404,,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A fuel pump is visible in the image,Genuine,mllm_only,Genuine,0.8,,Genuine,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,A fuel pump is visible in the image,Genuine,proposed,Genuine,0.6,0.2748956084251404,Genuine,matched
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,The image shows a dog running through a forest,Misleading,alignment_only,Misleading,0.9764453941663124,0.09920437633991241,,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,The image shows a dog running through a forest,Misleading,mllm_only,Misleading,0.8,,Misleading,visual_mismatch
+,news_clippings\experiments\images\GettyImages-2291860482-1788845943.webp,The image shows a dog running through a forest,Misleading,proposed,Misleading,0.7953,0.09920437633991241,Misleading,visual_mismatch

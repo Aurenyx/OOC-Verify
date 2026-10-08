@@ -1,0 +1,121 @@
+# ============================================================
+# OOC-Verify Git Ignore
+# ============================================================
+
+# ---------- Node / JavaScript ----------
+node_modules/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+build/
+tmp/
+out-tsc/
+*.tsbuildinfo
+
+# ---------- Python ----------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Python environment / secrets
+.env
+.env.*
+!.env.example
+
+# ---------- AI / ML model caches ----------
+qwen_offload/
+offload/
+models/
+model_cache/
+hf_cache/
+huggingface/
+.cache/huggingface/
+.cache/huggingface/hub/
+
+# ---------- Large datasets ----------
+news_clippings/
+visualnews/
+attached_assets/
+
+# ---------- Local project data ----------
+.conversation/
+screenshots/
+*.log
+
+# ---------- Local development tools ----------
+.agents/
+.cursor/
+.replit
+.replitignore
+replit.md
+
+# ---------- IDEs ----------
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ---------- OS files ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Coverage / testing ----------
+coverage/
+.pytest_cache/
+
+# ---------- Temporary files ----------
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# ---------- Local backup / generated files ----------
+gitsafe/
+
+# ---------- Clean repository local/generated files ----------
+artifacts/
+lib/
+scripts/
+screenshots/
+attached_assets/
+check_classifier.py
+evaluate_end_to_end.py
+news_clippings_file_list.txt
+
+# Frontend local/generated files
+frontend/node_modules/
+frontend/dist/
+frontend/.replit-artifact/
+frontend/*.tsbuildinfo
+
+# Backend local environment/test artifacts
+backend/.venv/
+backend/test_image.jpg
+
+# ---------- Local backup source files ----------
+backend/**/*_backup.py
+
+# ---------- Old root-level Replit project files ----------
+/package.json
+/pnpm-lock.yaml
+/pnpm-workspace.yaml
+/tsconfig.json
+/tsconfig.base.json
+/.npmrc
+
+# ---------- Old root-level evaluation files ----------
+/evaluation_*.csv
+/evaluation_images_contact_sheet.jpg
