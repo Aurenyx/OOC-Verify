@@ -130,7 +130,11 @@ async def verify_claim(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Remote verification failed: {exc}",
             ) from None
-
+        if not isinstance(remote_result, dict):
+            raise HTTPException(
+                status_code=502,
+                detail="Remote verification failed. The model service returned no valid result.",
+            )   
         prediction = remote_result["prediction"]
         reason = remote_result["reason"]
         visual_evidence = remote_result["visual_evidence"]
