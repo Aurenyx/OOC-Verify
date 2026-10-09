@@ -15,7 +15,7 @@ def analyze_remote_image(
     content_type: str,
     caption: str,
 ) -> dict:
-    """Analyze an image-caption pair using OpenRouter."""
+    """Analyze whether an image visually supports its caption."""
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -27,8 +27,7 @@ def analyze_remote_image(
     if not caption.strip():
         raise ValueError("Caption cannot be empty.")
 
-    allowed_types = {"image/jpeg", "image/png", "image/webp"}
-    if content_type not in allowed_types:
+    if content_type not in {"image/jpeg", "image/png", "image/webp"}:
         content_type = "image/jpeg"
 
     encoded_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -36,16 +35,16 @@ def analyze_remote_image(
 
     prompt = (
         "Analyze whether the image visually supports the caption. "
-        "Do not invent visual details or claim that an unverified event is true. "
-        "If the claim cannot be established from the image alone, state that limitation.\n\n"
-        f"Caption: {caption}\n\n"
-        "Return these exact fields on separate lines:\n"
+        "Judge visual consistency only; do not claim external events are verified. "
+        "Return exactly these fields on separate lines:\n"
         "Prediction: Genuine or Misleading\n"
         "Reason: A short explanation\n"
-        "Visual Evidence: Details visible in the image"
+        "Visual Evidence: Details visible in the image\n\n"
+        f"Caption: {caption}"
     )
 
     try:
+        print("DEBUG: Calling OpenRouter from openrouter_service.py", flush=True)
         response = requests.post(
             OPENROUTER_URL,
             headers={
@@ -72,12 +71,21 @@ def analyze_remote_image(
             },
             timeout=90,
         )
+        print("DEBUG: OpenRouter HTTP status:", response.status_code, flush=True)
         response.raise_for_status()
-    except requests.RequestException:
-        raise RuntimeError(
-            "Remote model request failed. Check OpenRouter availability, "
-            "rate limits, and API configuration."
-        ) from None
+    except requests.RequestException as exc:
+        if exc.response is not None:
+            print(
+                "OpenRouter error:",
+                exc.response.status_code,
+                exc.response.text[:1000],
+            )
+    else:
+        print("OpenRouter connection error:", str(exc))
+
+    raise RuntimeError(
+        "Remote model request failed. Check the backend logs for details."
+    ) from None
 
     try:
         payload = response.json()
@@ -92,10 +100,27 @@ def analyze_remote_image(
 
     cleaned = re.sub(r"[*_`#]", "", model_output).strip()
 
+    # Prefer an explicitly labelled prediction.
     prediction_match = re.search(
-        r"(?im)^\s*Prediction\s*:\s*(Genuine|Misleading)\b",
+        r"(?im)^\s*(?:prediction|verdict|classification|decision)\s*[:\-]\s*(genuine|misleading)\b",
         cleaned,
     )
+
+    # Fallback: accept a clear standalone prediction line.
+    if not prediction_match:
+        prediction_match = re.search(
+            r"(?im)^\s*(genuine|misleading)\s*[.!]?\s*$",
+            cleaned,
+        )
+
+    if not prediction_match:
+        raise RuntimeError(
+            "The remote model did not provide a recognizable prediction. "
+            f"Model response: {cleaned[:800]}"
+        )
+
+    prediction = prediction_match.group(1).capitalize()
+
     reason_match = re.search(
         r"(?ims)^\s*Reason\s*:\s*(.*?)(?=^\s*Visual Evidence\s*:|\Z)",
         cleaned,
@@ -105,55 +130,24 @@ def analyze_remote_image(
         cleaned,
     )
 
-    
-    # If the model uses a different format, retry parsing common alternatives.
-    if not prediction_match:
-        prediction_match = re.search(
-            r"(?i)\b(Genuine|Misleading)\b",
-            cleaned,
-        )
-
-    if not reason_match:
-        reason_match = re.search(
-            r"(?is)\bReason\s*[:\-]\s*(.+?)(?=\bVisual Evidence\b|\Z)",
-            cleaned,
-        )
-
-    if not evidence_match:
-        evidence_match = re.search(
-            r"(?is)\bVisual Evidence\s*[:\-]\s*(.+)\Z",
-            cleaned,
-        )
-
-    if not prediction_match:
-        raise RuntimeError(
-            "The remote model did not provide a recognizable prediction."
-        )
-
-    prediction = prediction_match.group(1).capitalize()
-
     reason = (
         reason_match.group(1).strip()
         if reason_match
-        else "The remote model did not provide a separate explanation."
+        else "No separate explanation was provided by the remote model."
     )
-
     visual_evidence = (
         evidence_match.group(1).strip()
         if evidence_match
-        else "The remote model did not provide a separate visual evidence field."
+        else "No separate visual evidence field was provided by the remote model."
     )
-
-    reason = reason_match.group(1).strip()
-    visual_evidence = evidence_match.group(1).strip()
 
     if not reason or not visual_evidence:
         raise RuntimeError(
-            "The remote model returned empty reason or visual evidence."
+            "The remote model returned an empty reason or visual evidence field."
         )
 
     return {
-        "prediction": prediction_match.group(1).capitalize(),
+        "prediction": prediction,
         "reason": reason,
         "visual_evidence": visual_evidence,
         "model": payload.get("model", MODEL_NAME),
