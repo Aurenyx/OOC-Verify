@@ -1,3 +1,5 @@
-from app.services.clip_service import CLIPService, clip_service, get_clip_service
+"""Service package.
 
-__all__ = ["CLIPService", "clip_service", "get_clip_service"]
+Import individual service modules where needed.
+Avoid loading local ML dependencies automatically.
+"""
