@@ -79,76 +79,77 @@ def analyze_remote_image(
                 "OpenRouter error:",
                 exc.response.status_code,
                 exc.response.text[:1000],
+                flush=True,
             )
-    else:
-        print("OpenRouter connection error:", str(exc))
+        else:
+            print("OpenRouter connection error:", str(exc), flush=True)
 
-    raise RuntimeError(
-        "Remote model request failed. Check the backend logs for details."
-    ) from None
-
-    try:
-        payload = response.json()
-        model_output = payload["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
         raise RuntimeError(
-            "OpenRouter returned an unexpected response format."
+            "Remote model request failed. Check the backend logs for details."
         ) from None
 
-    if not isinstance(model_output, str) or not model_output.strip():
-        raise RuntimeError("The remote model returned an empty response.")
+        try:
+            payload = response.json()
+            model_output = payload["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise RuntimeError(
+                "OpenRouter returned an unexpected response format."
+            ) from None
 
-    cleaned = re.sub(r"[*_`#]", "", model_output).strip()
+        if not isinstance(model_output, str) or not model_output.strip():
+            raise RuntimeError("The remote model returned an empty response.")
+
+        cleaned = re.sub(r"[*_`#]", "", model_output).strip()
 
     # Prefer an explicitly labelled prediction.
-    prediction_match = re.search(
-        r"(?im)^\s*(?:prediction|verdict|classification|decision)\s*[:\-]\s*(genuine|misleading)\b",
-        cleaned,
-    )
-
-    # Fallback: accept a clear standalone prediction line.
-    if not prediction_match:
         prediction_match = re.search(
-            r"(?im)^\s*(genuine|misleading)\s*[.!]?\s*$",
+            r"(?im)^\s*(?:prediction|verdict|classification|decision)\s*[:\-]\s*(genuine|misleading)\b",
             cleaned,
         )
 
-    if not prediction_match:
-        raise RuntimeError(
-            "The remote model did not provide a recognizable prediction. "
-            f"Model response: {cleaned[:800]}"
+    # Fallback: accept a clear standalone prediction line.
+        if not prediction_match:
+            prediction_match = re.search(
+                r"(?im)^\s*(genuine|misleading)\s*[.!]?\s*$",
+                cleaned,
+            )
+
+        if not prediction_match:
+            raise RuntimeError(
+                "The remote model did not provide a recognizable prediction. "
+                f"Model response: {cleaned[:800]}"
+            )
+
+        prediction = prediction_match.group(1).capitalize()
+
+        reason_match = re.search(
+            r"(?ims)^\s*Reason\s*:\s*(.*?)(?=^\s*Visual Evidence\s*:|\Z)",
+            cleaned,
+        )
+        evidence_match = re.search(
+            r"(?ims)^\s*Visual Evidence\s*:\s*(.*)\Z",
+            cleaned,
         )
 
-    prediction = prediction_match.group(1).capitalize()
+        reason = (
+            reason_match.group(1).strip()
+            if reason_match
+            else "No separate explanation was provided by the remote model."
+        )
+        visual_evidence = (
+            evidence_match.group(1).strip()
+            if evidence_match
+            else "No separate visual evidence field was provided by the remote model."
+        )
 
-    reason_match = re.search(
-        r"(?ims)^\s*Reason\s*:\s*(.*?)(?=^\s*Visual Evidence\s*:|\Z)",
-        cleaned,
-    )
-    evidence_match = re.search(
-        r"(?ims)^\s*Visual Evidence\s*:\s*(.*)\Z",
-        cleaned,
-    )
-
-    reason = (
-        reason_match.group(1).strip()
-        if reason_match
-        else "No separate explanation was provided by the remote model."
-    )
-    visual_evidence = (
-        evidence_match.group(1).strip()
-        if evidence_match
-        else "No separate visual evidence field was provided by the remote model."
-    )
-
-    if not reason or not visual_evidence:
-        raise RuntimeError(
+        if not reason or not visual_evidence:
+            raise RuntimeError(
             "The remote model returned an empty reason or visual evidence field."
         )
 
-    return {
-        "prediction": prediction,
-        "reason": reason,
-        "visual_evidence": visual_evidence,
-        "model": payload.get("model", MODEL_NAME),
-    }
+        return {
+            "prediction": prediction,
+            "reason": reason,
+            "visual_evidence": visual_evidence,
+            "model": payload.get("model", MODEL_NAME),
+            }
