@@ -10,7 +10,7 @@ from app.services.openrouter_service import analyze_remote_image
 import os
 from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from app.pipeline.orchestrator import run_verification
+
 
 from app.config import settings
 
@@ -192,6 +192,9 @@ async def verify_claim(
         )
 
     # 5. Execute pipeline orchestrator with CLIP alignment
+    # 5. Execute pipeline orchestrator with CLIP alignment
+
+    from app.pipeline.orchestrator import run_verification
 
     try:
         result = run_verification(
