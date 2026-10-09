@@ -104,6 +104,7 @@ frontend/*.tsbuildinfo
 # Backend local environment/test artifacts
 backend/.venv/
 backend/test_image.jpg
+backend/test_image2.jpg
 
 # ---------- Local backup source files ----------
 backend/**/*_backup.py

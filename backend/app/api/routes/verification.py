@@ -1,10 +1,18 @@
+import mimetypes
+import uuid
+
+from app.schemas.verification import (
+    PipelineStageResult,
+    VerificationResult,
+)
+from app.services.openrouter_service import analyze_remote_image
+
 import os
 from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from app.pipeline.orchestrator import run_verification
 
 from app.config import settings
-from app.pipeline.orchestrator import run_verification
-from app.schemas.verification import VerificationResult
 
 router = APIRouter()
 
@@ -103,7 +111,88 @@ async def verify_claim(
             ),
         )
 
+    # Remote demo mode: use OpenRouter without local CLIP/Qwen.
+    if os.getenv("OOC_VERIFY_MODE", "local").strip().lower() == "remote":
+        try:
+            content_type = (
+                image.content_type
+                or mimetypes.guess_type(image.filename)[0]
+                or "image/jpeg"
+            )
+
+            remote_result = analyze_remote_image(
+                image_bytes=contents,
+                content_type=content_type,
+                caption=trimmed_caption,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Remote verification failed: {exc}",
+            ) from None
+
+        prediction = remote_result["prediction"]
+        reason = remote_result["reason"]
+        visual_evidence = remote_result["visual_evidence"]
+
+        stages = [
+            PipelineStageResult(
+                stage="input_validation",
+                status="completed",
+                detail="Image and caption validated.",
+            ),
+            PipelineStageResult(
+                stage="remote_multimodal_analysis",
+                status="completed",
+                detail=(
+                    "Image-caption consistency analyzed through "
+                    f"remote model: {remote_result['model']}."
+                ),
+            ),
+            PipelineStageResult(
+                stage="evidence_retrieval",
+                status="skipped",
+                detail=(
+                    "External evidence retrieval was not performed. "
+                    "This result assesses visual consistency only."
+                ),
+            ),
+            PipelineStageResult(
+                stage="final_decision",
+                status="completed",
+                detail=f"Remote model prediction: {prediction}.",
+            ),
+        ]
+
+        return VerificationResult(
+            id=str(uuid.uuid4()),
+            prediction=prediction,
+            confidence_score=0.0,
+            confidenceScore=0.0,
+            clip_score=None,
+            clipScore=None,
+            alignment_score=None,
+            alignmentScore=None,
+            reason=reason,
+            evidence=[],
+            explanation=(
+                f"Remote multimodal model: {remote_result['model']}. "
+                f"Visual evidence reported by the model: {visual_evidence} "
+                "External evidence retrieval and the frozen research "
+                "fusion pipeline were not executed. The model's prediction "
+                "is not a calibrated confidence estimate."
+            ),
+            inconsistency_type="Remote visual-caption consistency",
+            inconsistencyType="Remote visual-caption consistency",
+            dataset=dataset.strip() if dataset else "Custom Pair",
+            ground_truth_label=None,
+            groundTruthLabel=None,
+            pipeline_stages=stages,
+            is_stub=False,
+        )
+
     # 5. Execute pipeline orchestrator with CLIP alignment
+
     try:
         result = run_verification(
             image_bytes=contents,
