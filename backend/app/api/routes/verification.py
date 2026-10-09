@@ -36,8 +36,7 @@ async def verify_claim(
     Verification endpoint for out-of-context multimodal analysis.
 
     Validates inputs and executes the pipeline orchestrator:
-    - Runs real CLIP cross-modal alignment scoring (openai/clip-vit-base-patch32)
-      with GPU/CUDA acceleration when available.
+    - Runs real CLIP cross-modal alignment scoring (openai/clip-vit-base-patch32) with GPU/CUDA acceleration when available.
     - Maintains remaining stages (MLLM reasoning, retrieval, classifier) as stubs.
     """
     # 1. Validate caption
@@ -125,16 +124,37 @@ async def verify_claim(
                 content_type=content_type,
                 caption=trimmed_caption,
             )
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid verification input: {exc}",
+            ) from None
+        except RuntimeError as exc:
+            err_msg = str(exc)
+            if "OPENROUTER_API_KEY" in err_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Remote verification service is misconfigured (missing OPENROUTER_API_KEY).",
+                ) from None
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Remote verification failed: {err_msg}",
+            ) from None
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Remote verification failed: {exc}",
             ) from None
-        if not isinstance(remote_result, dict):
+
+        required_keys = {"prediction", "reason", "visual_evidence", "model"}
+        if not isinstance(remote_result, dict) or not required_keys.issubset(remote_result.keys()):
             raise HTTPException(
-                status_code=502,
-                detail="Remote verification failed. The model service returned no valid result.",
-            )   
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Remote verification failed. The model service returned an invalid result.",
+            )
+
         prediction = remote_result["prediction"]
         reason = remote_result["reason"]
         visual_evidence = remote_result["visual_evidence"]
@@ -196,8 +216,6 @@ async def verify_claim(
         )
 
     # 5. Execute pipeline orchestrator with CLIP alignment
-    # 5. Execute pipeline orchestrator with CLIP alignment
-
     from app.pipeline.orchestrator import run_verification
 
     try:
