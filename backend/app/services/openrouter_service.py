@@ -12,7 +12,30 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+
+DEFAULT_VISION_MODELS = [
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "google/gemma-4-31b-it:free",
+]
+
+
+def get_candidate_models() -> list[str]:
+    """Return prioritized, deduplicated list of multimodal vision models (max 3 for OpenRouter)."""
+    configured_model = os.getenv("OPENROUTER_MODEL", "").strip()
+    candidates: list[str] = []
+
+    if configured_model and configured_model.lower() != "openrouter/free":
+        candidates.append(configured_model)
+
+    for fallback in DEFAULT_VISION_MODELS:
+        if fallback not in candidates:
+            candidates.append(fallback)
+
+    return candidates[:3]
+
+
+MODEL_NAME = DEFAULT_VISION_MODELS[0]
 
 
 def analyze_remote_image(
@@ -49,13 +72,17 @@ def analyze_remote_image(
         f"Caption: {caption}"
     )
 
+    candidate_models = get_candidate_models()
+    primary_model = candidate_models[0]
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "X-Title": "OOC-Verify",
     }
     payload_data = {
-        "model": MODEL_NAME,
+        "model": primary_model,
+        "models": candidate_models,
         "messages": [
             {
                 "role": "user",
@@ -73,7 +100,7 @@ def analyze_remote_image(
     }
 
     try:
-        print("DEBUG: Calling OpenRouter from openrouter_service.py", flush=True)
+        print(f"DEBUG: Calling OpenRouter with models {candidate_models}", flush=True)
         response = requests.post(
             OPENROUTER_URL,
             headers=headers,
@@ -163,6 +190,15 @@ def analyze_remote_image(
 
     cleaned = re.sub(r"[*_`#]", "", model_output).strip()
 
+    # Reject content safety responses explicitly
+    if re.search(r"(?im)^\s*User Safety\s*:\s*safe\b", cleaned):
+        print(f"OpenRouter returned content safety classification:\n{model_output}", flush=True)
+        logger.error(f"OpenRouter content safety classification: {model_output}")
+        raise RuntimeError(
+            "The remote model returned a content safety classification instead of a verification prediction. "
+            f"Model response: {cleaned[:800]}"
+        )
+
     # Prefer an explicitly labelled prediction.
     prediction_match = re.search(
         r"(?im)^\s*(?:prediction|verdict|classification|decision)\s*[:\-]\s*(genuine|misleading)\b",
@@ -213,7 +249,7 @@ def analyze_remote_image(
             "The remote model returned an empty reason or visual evidence field."
         )
 
-    model_used = payload.get("model") or MODEL_NAME
+    model_used = payload.get("model") or primary_model
 
     return {
         "prediction": prediction,

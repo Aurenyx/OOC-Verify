@@ -177,6 +177,119 @@ class TestOpenRouterRemoteVerification(unittest.TestCase):
                 analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
             self.assertIn("did not provide a recognizable prediction", str(ctx.exception))
 
+    @patch("requests.post")
+    def test_default_model_routing_uses_verified_vision_models(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "dots-studio/dots-3-note-preview:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat is visible.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(result["model"], "dots-studio/dots-3-note-preview:free")
+        called_json = mock_post.call_args[1]["json"]
+        self.assertIn("models", called_json)
+        self.assertLessEqual(len(called_json["models"]), 3)
+        self.assertEqual(called_json["model"], "dots-studio/dots-3-note-preview:free")
+        self.assertEqual(called_json["models"][0], "dots-studio/dots-3-note-preview:free")
+        self.assertNotIn("openrouter/free", called_json["models"])
+
+    @patch("requests.post")
+    def test_custom_model_routing_and_deduplication(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat is visible.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "test-key-12345",
+                "OPENROUTER_MODEL": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            },
+            clear=True,
+        ):
+            analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        called_json = mock_post.call_args[1]["json"]
+        models_list = called_json["models"]
+        self.assertEqual(models_list[0], "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        self.assertEqual(len(models_list), len(set(models_list)), "Models list must not contain duplicates")
+        self.assertLessEqual(len(models_list), 3)
+
+    @patch("requests.post")
+    def test_openrouter_free_env_overridden_with_verified_models(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "dots-studio/dots-3-note-preview:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat is visible.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "test-key-12345",
+                "OPENROUTER_MODEL": "openrouter/free",
+            },
+            clear=True,
+        ):
+            analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        called_json = mock_post.call_args[1]["json"]
+        self.assertNotIn("openrouter/free", called_json["models"])
+        self.assertEqual(called_json["models"][0], "dots-studio/dots-3-note-preview:free")
+
+    @patch("requests.post")
+    def test_rejects_user_safety_safe_classification(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "nvidia/nemotron-3.5-content-safety:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "User Safety: safe"
+                    }
+                }
+            ],
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}):
+            with self.assertRaises(RuntimeError) as ctx:
+                analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+            error_msg = str(ctx.exception)
+            self.assertIn("content safety classification", error_msg)
+            self.assertNotIn("Genuine", error_msg)
+
 
 class TestVerificationApiRemoteRoute(unittest.TestCase):
     def setUp(self):
