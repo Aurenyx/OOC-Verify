@@ -36,11 +36,7 @@ minimumReleaseAgeExclude:
 
 packages:
   - frontend
-  - artifacts/*
-  - lib/*
-  - lib/integrations/*
-  - scripts
-
+  - lib/api-client-react
 
 catalog:
   '@replit/vite-plugin-cartographer': ^0.5.21

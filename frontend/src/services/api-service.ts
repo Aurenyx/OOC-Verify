@@ -5,12 +5,8 @@ import {
   mockService,
 } from './mock-data';
 
-// Default to environment variable, then proxy relative path or direct localhost
-const API_BASE_URL =
-  (import.meta as any).env?.VITE_API_BASE_URL ||
-  (typeof window !== 'undefined' && window.location.port === '5173'
-    ? 'http://127.0.0.1:8001'
-    : 'http://127.0.0.1:8001');
+// Default to environment variable, then fallback to deployed Render backend
+const API_BASE_URL = 'https://ooc-verify.onrender.com';
 
 export interface BackendPipelineStage {
   stage: string;

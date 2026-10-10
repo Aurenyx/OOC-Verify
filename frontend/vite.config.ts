@@ -21,17 +21,17 @@ export default defineConfig({
     tailwindcss(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== 'production' &&
-    process.env.REPL_ID !== undefined
+      process.env.REPL_ID !== undefined
       ? [
-          await import('@replit/vite-plugin-cartographer').then((m) =>
-            m.cartographer({
-              root: path.resolve(import.meta.dirname, '..'),
-            }),
-          ),
-          await import('@replit/vite-plugin-dev-banner').then((m) =>
-            m.devBanner(),
-          ),
-        ]
+        await import('@replit/vite-plugin-cartographer').then((m) =>
+          m.cartographer({
+            root: path.resolve(import.meta.dirname, '..'),
+          }),
+        ),
+        await import('@replit/vite-plugin-dev-banner').then((m) =>
+          m.devBanner(),
+        ),
+      ]
       : []),
   ],
   resolve: {
@@ -61,8 +61,9 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8001',
+        target: 'https://ooc-verify.onrender.com',
         changeOrigin: true,
+        secure: true,
       },
     },
   },
