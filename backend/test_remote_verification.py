@@ -334,19 +334,11 @@ class TestOpenRouterRemoteVerification(unittest.TestCase):
             result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
 
         self.assertEqual(result["model"], "google/gemma-4-31b-it:free")
+        self.assertEqual(mock_post.call_count, 1)
         called_json = mock_post.call_args[1]["json"]
-        self.assertIn("models", called_json)
-        self.assertLessEqual(len(called_json["models"]), 3)
+        self.assertNotIn("models", called_json)
         self.assertEqual(called_json["model"], "google/gemma-4-31b-it:free")
-        self.assertEqual(
-            called_json["models"],
-            [
-                "google/gemma-4-31b-it:free",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-            ],
-        )
-        self.assertNotIn("dots-studio/dots-3-note-preview:free", called_json["models"])
-        self.assertNotIn("openrouter/free", called_json["models"])
+        self.assertEqual(mock_post.call_args[1]["timeout"], 30.0)
 
     @patch("app.services.openrouter_service.requests.post")
     def test_custom_model_routing_and_deduplication(self, mock_post):
@@ -374,13 +366,10 @@ class TestOpenRouterRemoteVerification(unittest.TestCase):
         ):
             analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
 
+        self.assertEqual(mock_post.call_count, 1)
         called_json = mock_post.call_args[1]["json"]
-        models_list = called_json["models"]
-        self.assertEqual(models_list[0], "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
-        self.assertEqual(models_list[1], "google/gemma-4-31b-it:free")
-        self.assertEqual(len(models_list), len(set(models_list)), "Models list must not contain duplicates")
-        self.assertLessEqual(len(models_list), 3)
-        self.assertNotIn("dots-studio/dots-3-note-preview:free", models_list)
+        self.assertNotIn("models", called_json)
+        self.assertEqual(called_json["model"], "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
 
     @patch("app.services.openrouter_service.requests.post")
     def test_openrouter_free_env_overridden_with_verified_models(self, mock_post):
@@ -408,16 +397,209 @@ class TestOpenRouterRemoteVerification(unittest.TestCase):
         ):
             analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
 
+        self.assertEqual(mock_post.call_count, 1)
         called_json = mock_post.call_args[1]["json"]
-        self.assertNotIn("openrouter/free", called_json["models"])
-        self.assertEqual(
-            called_json["models"],
-            [
-                "google/gemma-4-31b-it:free",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        self.assertNotIn("models", called_json)
+        self.assertEqual(called_json["model"], "google/gemma-4-31b-it:free")
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_first_model_success_does_not_call_fallback(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model": "google/gemma-4-31b-it:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Verified.\nVisual Evidence: Cat."
+                    }
+                }
             ],
-        )
-        self.assertNotIn("dots-studio/dots-3-note-preview:free", called_json["models"])
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(result["model"], "google/gemma-4-31b-it:free")
+        self.assertEqual(result["prediction"], "Genuine")
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_fallback_success_on_504(self, mock_post):
+        resp_504 = MagicMock()
+        resp_504.status_code = 504
+        resp_504.text = "Gateway timeout"
+        resp_504.json.return_value = {"error": {"message": "The operation was aborted"}}
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat on rug.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.side_effect = [resp_504, resp_200]
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 2)
+        call_1_model = mock_post.call_args_list[0][1]["json"]["model"]
+        call_2_model = mock_post.call_args_list[1][1]["json"]["model"]
+        self.assertEqual(call_1_model, "google/gemma-4-31b-it:free")
+        self.assertEqual(call_2_model, "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        self.assertEqual(result["model"], "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        self.assertEqual(result["prediction"], "Genuine")
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_fallback_success_on_timeout(self, mock_post):
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat on rug.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.side_effect = [requests.Timeout("Read timed out"), resp_200]
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(result["model"], "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        self.assertEqual(result["prediction"], "Genuine")
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_all_models_failing_with_504(self, mock_post):
+        resp_504 = MagicMock()
+        resp_504.status_code = 504
+        resp_504.text = "Gateway timeout"
+        resp_504.json.return_value = {"error": {"message": "The operation was aborted"}}
+        mock_post.return_value = resp_504
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn("504", str(ctx.exception))
+        self.assertIn("The operation was aborted", str(ctx.exception))
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_transient_http_statuses_trigger_fallback(self, mock_post):
+        for status_code in (429, 502, 503, 504):
+            with self.subTest(status_code=status_code):
+                mock_post.reset_mock()
+                resp_transient = MagicMock()
+                resp_transient.status_code = status_code
+                resp_transient.text = f"Error {status_code}"
+                resp_transient.json.return_value = {"error": {"message": f"Transient error {status_code}"}}
+
+                resp_200 = MagicMock()
+                resp_200.status_code = 200
+                resp_200.json.return_value = {
+                    "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "Prediction: Genuine\nReason: Cat on rug.\nVisual Evidence: Tabby cat."
+                            }
+                        }
+                    ],
+                }
+                mock_post.side_effect = [resp_transient, resp_200]
+
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+                    result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+                self.assertEqual(mock_post.call_count, 2)
+                self.assertEqual(result["prediction"], "Genuine")
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_non_retryable_error_aborts_immediately(self, mock_post):
+        for status_code in (400, 401, 403):
+            with self.subTest(status_code=status_code):
+                mock_post.reset_mock()
+                resp_client_err = MagicMock()
+                resp_client_err.status_code = status_code
+                resp_client_err.text = f"Client error {status_code}"
+                resp_client_err.json.return_value = {"error": {"message": f"Non-retryable {status_code}"}}
+                mock_post.return_value = resp_client_err
+                mock_post.side_effect = None
+
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+                self.assertEqual(mock_post.call_count, 1)
+                self.assertIn(str(status_code), str(ctx.exception))
+
+    @patch("app.services.openrouter_service.time.monotonic")
+    @patch("app.services.openrouter_service.requests.post")
+    def test_deadline_exhaustion_aborts_fallback(self, mock_post, mock_monotonic):
+        mock_monotonic.side_effect = [0.0, 0.0, 71.0, 71.0]
+
+        resp_504 = MagicMock()
+        resp_504.status_code = 504
+        resp_504.text = "Gateway timeout"
+        resp_504.json.return_value = {"error": {"message": "The operation was aborted"}}
+        mock_post.return_value = resp_504
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-12345"}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn("504", str(ctx.exception))
+
+    @patch("app.services.openrouter_service.requests.post")
+    def test_render_preference_nemotron_tried_first(self, mock_post):
+        resp_504 = MagicMock()
+        resp_504.status_code = 504
+        resp_504.text = "Gateway timeout"
+        resp_504.json.return_value = {"error": {"message": "The operation was aborted"}}
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "model": "google/gemma-4-31b-it:free",
+            "choices": [
+                {
+                    "message": {
+                        "content": "Prediction: Genuine\nReason: Cat on rug.\nVisual Evidence: Tabby cat."
+                    }
+                }
+            ],
+        }
+        mock_post.side_effect = [resp_504, resp_200]
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "test-key-12345",
+                "OPENROUTER_MODEL": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            },
+            clear=True,
+        ):
+            result = analyze_remote_image(self.dummy_image, "image/jpeg", self.sample_caption)
+
+        self.assertEqual(mock_post.call_count, 2)
+        call_1_model = mock_post.call_args_list[0][1]["json"]["model"]
+        call_2_model = mock_post.call_args_list[1][1]["json"]["model"]
+        self.assertEqual(call_1_model, "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        self.assertEqual(call_2_model, "google/gemma-4-31b-it:free")
+        self.assertEqual(result["model"], "google/gemma-4-31b-it:free")
 
     def test_get_candidate_models_default_ordering(self):
         with patch.dict(os.environ, {}, clear=True):

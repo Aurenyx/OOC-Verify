@@ -3,6 +3,7 @@ import base64
 import logging
 import os
 import re
+import time
 
 from dotenv import load_dotenv
 import requests
@@ -17,6 +18,10 @@ DEFAULT_VISION_MODELS = [
     "google/gemma-4-31b-it:free",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 ]
+
+PER_REQUEST_TIMEOUT_SECONDS = 30.0
+OVERALL_DEADLINE_SECONDS = 70.0
+MIN_REMAINING_BUDGET_SECONDS = 1.0
 
 
 def get_candidate_models() -> list[str]:
@@ -176,52 +181,83 @@ def analyze_remote_image(
     )
 
     candidate_models = get_candidate_models()
-    primary_model = candidate_models[0]
+    if not candidate_models:
+        raise RuntimeError("No candidate vision models configured.")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "X-Title": "OOC-Verify",
     }
-    payload_data = {
-        "model": primary_model,
-        "models": candidate_models,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_url},
-                    },
-                ],
-            }
-        ],
-        "temperature": 0,
-        "max_tokens": 700,
-    }
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url},
+                },
+            ],
+        }
+    ]
 
-    try:
-        logger.debug("Calling OpenRouter with candidate models: %s", candidate_models)
-        response = requests.post(
-            OPENROUTER_URL,
-            headers=headers,
-            json=payload_data,
-            timeout=90,
+    start_time = time.monotonic()
+    overall_deadline = start_time + OVERALL_DEADLINE_SECONDS
+
+    last_error: Exception | None = None
+    response = None
+    active_model: str = candidate_models[0]
+
+    for model_id in candidate_models:
+        remaining_budget = overall_deadline - time.monotonic()
+        if remaining_budget < MIN_REMAINING_BUDGET_SECONDS:
+            logger.warning(
+                "Insufficient time budget remaining (%.1fs) before attempting model: %s",
+                remaining_budget,
+                model_id,
+            )
+            break
+
+        request_timeout = min(PER_REQUEST_TIMEOUT_SECONDS, remaining_budget)
+        active_model = model_id
+
+        payload_data = {
+            "model": model_id,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 700,
+        }
+
+        logger.info(
+            "Attempting remote verification with model: %s (timeout: %.1fs)",
+            model_id,
+            request_timeout,
         )
-        logger.debug("OpenRouter HTTP status: %s", response.status_code)
-    except requests.Timeout as exc:
-        logger.error("OpenRouter connection timeout: %s", exc)
-        raise RuntimeError("Remote model request timed out.") from None
-    except requests.ConnectionError as exc:
-        logger.error("OpenRouter connection error: %s", exc)
-        raise RuntimeError(f"Failed to connect to remote model service: {exc}") from None
-    except requests.RequestException as exc:
-        logger.error("OpenRouter request error: %s", exc)
-        raise RuntimeError(f"Remote model request failed: {exc}") from None
+        try:
+            response = requests.post(
+                OPENROUTER_URL,
+                headers=headers,
+                json=payload_data,
+                timeout=request_timeout,
+            )
+        except requests.Timeout as exc:
+            logger.warning("Model %s request timed out: %s", model_id, exc)
+            last_error = RuntimeError("Remote model request timed out.")
+            response = None
+            continue
+        except requests.ConnectionError as exc:
+            logger.warning("Model %s connection error: %s", model_id, exc)
+            last_error = RuntimeError(f"Failed to connect to remote model service: {exc}")
+            response = None
+            continue
+        except requests.RequestException as exc:
+            logger.error("OpenRouter request error on model %s: %s", model_id, exc)
+            raise RuntimeError(f"Remote model request failed: {exc}") from None
 
-    if response.status_code != 200:
+        if response.status_code == 200:
+            break
+
         error_detail = response.text[:1000]
         try:
             err_json = response.json()
@@ -235,10 +271,32 @@ def analyze_remote_image(
             pass
 
         safe_detail = str(error_detail).replace(api_key, "[REDACTED]")
-        logger.error("OpenRouter error %s: %s", response.status_code, safe_detail)
+
+        if response.status_code in {429, 502, 503, 504}:
+            logger.warning(
+                "Model %s failed with transient status %d; attempting fallback candidate if available.",
+                model_id,
+                response.status_code,
+            )
+            last_error = RuntimeError(
+                f"Remote model request failed with status {response.status_code}: {safe_detail}"
+            )
+            response = None
+            continue
+
+        logger.error(
+            "OpenRouter non-retryable status %d on model %s",
+            response.status_code,
+            model_id,
+        )
         raise RuntimeError(
             f"Remote model request failed with status {response.status_code}: {safe_detail}"
         )
+
+    if response is None or response.status_code != 200:
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Remote model request timed out (overall deadline exceeded).")
 
     try:
         payload = response.json()
@@ -416,7 +474,7 @@ def analyze_remote_image(
             )
             prediction = "Inconclusive"
 
-    model_used = payload.get("model") or primary_model
+    model_used = payload.get("model") or active_model
 
     return {
         "prediction": prediction,
