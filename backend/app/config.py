@@ -13,14 +13,21 @@ class Settings:
     # CORS configuration
     # Accepts comma-separated list of origins or FRONTEND_ORIGIN
     FRONTEND_ORIGIN: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
-    CORS_ORIGINS: List[str] = [
-        origin.strip()
-        for origin in os.getenv(
-            "CORS_ORIGINS",
-            f"{os.getenv('FRONTEND_ORIGIN', 'http://localhost:5173')},http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5000",
-        ).split(",")
-        if origin.strip()
-    ]
+    DEFAULT_CORS_ORIGINS: str = (
+        f"{os.getenv('FRONTEND_ORIGIN', 'http://localhost:5173')},"
+        "https://ooc-verify-1.onrender.com,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://localhost:5000"
+    )
+    CORS_ORIGINS: List[str] = list(
+        dict.fromkeys(
+            origin.strip()
+            for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
+            if origin.strip()
+        )
+    )
 
     # Image upload constraints
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))

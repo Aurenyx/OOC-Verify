@@ -1162,6 +1162,92 @@ class TestVerificationApiRemoteRoute(unittest.TestCase):
 
             self.assertEqual(resp.status_code, 400)
 
+    def test_cors_headers_on_deployed_frontend_success(self):
+        deployed_origin = "https://ooc-verify-1.onrender.com"
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Genuine",
+                    "reason": "Cat is on rug.",
+                    "visual_evidence": "Tabby cat.",
+                    "model": "openrouter/free",
+                },
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "A cat sitting on a rug"},
+                        headers={"Origin": deployed_origin},
+                    )
+
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.headers.get("access-control-allow-origin"), deployed_origin)
+                self.assertEqual(resp.headers.get("access-control-allow-credentials"), "true")
+
+    def test_cors_headers_on_deployed_frontend_502_error(self):
+        deployed_origin = "https://ooc-verify-1.onrender.com"
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                side_effect=RuntimeError("Remote model request failed with status 502: Provider unavailable"),
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "A cat sitting on a rug"},
+                        headers={"Origin": deployed_origin},
+                    )
+
+                self.assertEqual(resp.status_code, 502)
+                self.assertEqual(resp.headers.get("access-control-allow-origin"), deployed_origin)
+                self.assertEqual(resp.headers.get("access-control-allow-credentials"), "true")
+
+    def test_cors_headers_on_deployed_frontend_400_error(self):
+        deployed_origin = "https://ooc-verify-1.onrender.com"
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote"}):
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/api/v1/verify",
+                    files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                    data={"caption": "   "},
+                    headers={"Origin": deployed_origin},
+                )
+
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.headers.get("access-control-allow-origin"), deployed_origin)
+            self.assertEqual(resp.headers.get("access-control-allow-credentials"), "true")
+
+    def test_cors_preflight_options_for_deployed_frontend(self):
+        deployed_origin = "https://ooc-verify-1.onrender.com"
+        with TestClient(app) as client:
+            resp = client.options(
+                "/api/v1/verify",
+                headers={
+                    "Origin": deployed_origin,
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("access-control-allow-origin"), deployed_origin)
+        self.assertEqual(resp.headers.get("access-control-allow-credentials"), "true")
+
+    def test_cors_rejects_unauthorized_external_origin(self):
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote"}):
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/api/v1/verify",
+                    files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                    data={"caption": "   "},
+                    headers={"Origin": "https://malicious-external-site.com"},
+                )
+
+            self.assertEqual(resp.status_code, 400)
+            self.assertNotIn("access-control-allow-origin", resp.headers)
+
 
 if __name__ == "__main__":
     unittest.main()
