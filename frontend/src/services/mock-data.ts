@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type Prediction = 'Genuine' | 'Misleading';
+export type Prediction = 'Genuine' | 'Misleading' | 'Inconclusive';
 export type EvidenceRelation = 'supports' | 'contradicts' | 'insufficient' | 'irrelevant';
 export type PipelineStage =
   | 'input_validation'

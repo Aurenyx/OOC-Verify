@@ -23,9 +23,9 @@ class EvidenceItem(BaseModel):
 class VerificationResult(BaseModel):
     id: str
     prediction: str = Field(
-    ...,
-    description="Verification prediction label: Genuine | Misleading | Pending",
-)
+        ...,
+        description="Verification prediction label: Genuine | Misleading | Inconclusive",
+    )
     confidence_score: float = Field(
         0.0,
         description="Model confidence score (0.0 indicates stub/uncalculated)",

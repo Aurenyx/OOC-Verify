@@ -153,6 +153,28 @@ export const apiService = {
 
     const data: BackendVerificationResponse = await res.json();
 
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid verification response received from backend.');
+    }
+
+    const rawPrediction = typeof data.prediction === 'string' ? data.prediction.trim() : '';
+    if (!rawPrediction) {
+      throw new Error('Backend response is missing a prediction label.');
+    }
+
+    const normalizedPrediction =
+      rawPrediction.charAt(0).toUpperCase() + rawPrediction.slice(1).toLowerCase();
+
+    if (
+      normalizedPrediction !== 'Genuine' &&
+      normalizedPrediction !== 'Misleading' &&
+      normalizedPrediction !== 'Inconclusive'
+    ) {
+      throw new Error(
+        `Invalid prediction received from backend: "${rawPrediction}". Expected "Genuine", "Misleading", or "Inconclusive".`
+      );
+    }
+
     const now = new Date();
     const formattedDate = now.toLocaleDateString('en-GB', {
       day: '2-digit',
@@ -163,11 +185,13 @@ export const apiService = {
     });
 
     const verification: Verification = {
-      id: data.id,
+      id: data.id || crypto.randomUUID(),
       image: params.imageUrl || (params.imageFile ? URL.createObjectURL(params.imageFile) : ''),
       caption: params.caption.trim(),
-      prediction: (data.prediction || 'Genuine') as Prediction,
-      confidenceScore: data.confidence_score ?? data.confidenceScore ?? 0.0,
+      prediction: normalizedPrediction as Prediction,
+      confidenceScore: typeof (data.confidence_score ?? data.confidenceScore) === 'number'
+        ? (data.confidence_score ?? data.confidenceScore)
+        : 0.0,
       clipScore: data.clip_score ?? data.clipScore,
       alignmentScore: data.alignment_score ?? data.alignmentScore ?? data.clip_score ?? data.clipScore,
       reason: data.reason,
@@ -205,3 +229,26 @@ export const apiService = {
     return mockService.listVerifications();
   },
 };
+
+/**
+ * Checks whether confidence_score = 0 is confirmed by the backend contract to be
+ * an uncalculated placeholder in remote mode (where no calibrated score is produced).
+ * Does not treat legitimate measured zeros in local/calibrated modes as unavailable.
+ */
+export function isRemotePlaceholderConfidence(verification?: {
+  confidenceScore?: number;
+  inconsistencyType?: string;
+  pipelineStages?: Array<{ stage: string }>;
+}): boolean {
+  if (!verification || verification.confidenceScore !== 0) {
+    return false;
+  }
+
+  const isRemoteContract =
+    verification.inconsistencyType?.toLowerCase().includes('remote') ||
+    verification.pipelineStages?.some(
+      (s) => s.stage === 'remote_multimodal_analysis'
+    );
+
+  return Boolean(isRemoteContract);
+}

@@ -46,7 +46,7 @@ import {
   type ExperimentConfiguration,
   type Verification,
 } from '@/services/mock-data';
-import { apiService } from '@/services/api-service';
+import { apiService, isRemotePlaceholderConfidence } from '@/services/api-service';
 
 const queryClient = new QueryClient();
 
@@ -222,7 +222,9 @@ function VerificationRow({ verification }: { verification: Verification }) {
         </p>
       </div>
       <div className="hidden text-right sm:block">
-        <p className="font-mono text-sm font-medium text-foreground">{Math.round(verification.confidenceScore * 100)}%</p>
+        <p className="font-mono text-sm font-medium text-foreground">
+          {isRemotePlaceholderConfidence(verification) ? 'Unavailable' : `${Math.round(verification.confidenceScore * 100)}%`}
+        </p>
         <p className="text-[10px] text-muted-foreground">Decision Confidence</p>
       </div>
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -231,10 +233,16 @@ function VerificationRow({ verification }: { verification: Verification }) {
 }
 
 function StatusPill({ prediction }: { prediction: Verification['prediction'] }) {
+  const colorClass =
+    prediction === 'Genuine'
+      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50'
+      : prediction === 'Misleading'
+      ? 'bg-rose-50 text-rose-700 border border-rose-200/50'
+      : 'bg-amber-50 text-amber-700 border border-amber-200/50';
+
   return (
     <span
-      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${prediction === 'Genuine' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50' : 'bg-rose-50 text-rose-700 border border-rose-200/50'
-        }`}
+      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${colorClass}`}
       data-testid={`status-prediction-${prediction.toLowerCase()}`}
     >
       {prediction}
@@ -719,7 +727,13 @@ function VerifyPage() {
                   Report ready for review
                 </p>
                 <p className="mt-1 text-xs text-emerald-700/75">
-                  Prediction: <strong>{completed.prediction}</strong> ({Math.round(completed.confidenceScore * 100)}% confidence) · Configuration: <strong>{formatConfiguration(completed.configuration)}</strong>.
+                  Prediction: <strong>{completed.prediction}</strong> (
+                  {completed.prediction === 'Inconclusive'
+                    ? 'Confidence not established'
+                    : isRemotePlaceholderConfidence(completed)
+                    ? 'Confidence unavailable in remote mode'
+                    : `${Math.round(completed.confidenceScore * 100)}% confidence`}
+                  ) · Configuration: <strong>{formatConfiguration(completed.configuration)}</strong>.
                 </p>
               </div>
               <button
@@ -883,8 +897,13 @@ function ReportPage({ verification }: { verification: Verification }) {
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-indigo-700">01 / Prediction</p>
                 <p
-                  className={`mt-4 text-4xl font-extrabold tracking-[-0.06em] ${verification.prediction === 'Genuine' ? 'text-emerald-700' : 'text-rose-700'
-                    }`}
+                  className={`mt-4 text-4xl font-extrabold tracking-[-0.06em] ${
+                    verification.prediction === 'Genuine'
+                      ? 'text-emerald-700'
+                      : verification.prediction === 'Misleading'
+                      ? 'text-rose-700'
+                      : 'text-amber-700'
+                  }`}
                   data-testid="text-prediction"
                 >
                   {verification.prediction}
@@ -898,18 +917,31 @@ function ReportPage({ verification }: { verification: Verification }) {
               <div className="flex items-end justify-between">
                 <div>
                   <p className="text-xs font-bold text-slate-600">Decision Confidence</p>
-                  <p className="mt-1 text-xs text-slate-500">Cross-modal agreement score.</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {verification.prediction === 'Inconclusive'
+                      ? 'Insufficient evidence to verify the claim.'
+                      : isRemotePlaceholderConfidence(verification)
+                      ? 'Not calculated in remote mode.'
+                      : 'Cross-modal agreement score.'}
+                  </p>
                 </div>
                 <span className="font-mono text-2xl font-medium text-slate-900" data-testid="text-decision-confidence">
-                  {typeof verification.confidenceScore === 'number' && !Number.isNaN(verification.confidenceScore)
-                    ? `${Math.round(verification.confidenceScore * 100)}%`
-                    : '0%'}
+                  {verification.prediction === 'Inconclusive' || isRemotePlaceholderConfidence(verification)
+                    ? 'Unavailable'
+                    : typeof verification.confidenceScore === 'number' && !Number.isNaN(verification.confidenceScore)
+                      ? `${Math.round(verification.confidenceScore * 100)}%`
+                      : 'N/A'}
                 </span>
               </div>
               <div className="mt-4 h-2 overflow-hidden rounded-full bg-indigo-100">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-1000"
-                  style={{ width: `${Math.max(0, Math.min(100, (verification.confidenceScore ?? 0) * 100))}%` }}
+                  style={{
+                    width:
+                      verification.prediction === 'Inconclusive' || isRemotePlaceholderConfidence(verification)
+                        ? '0%'
+                        : `${Math.max(0, Math.min(100, (verification.confidenceScore ?? 0) * 100))}%`,
+                  }}
                 />
               </div>
             </div>
@@ -1129,6 +1161,7 @@ function HistoryPage() {
             <option>All predictions</option>
             <option>Genuine</option>
             <option>Misleading</option>
+            <option>Inconclusive</option>
           </select>
         </div>
         <div className="overflow-x-auto">
@@ -1155,7 +1188,11 @@ function HistoryPage() {
                   <td className="px-5 py-4">
                     <StatusPill prediction={item.prediction} />
                   </td>
-                  <td className="px-5 py-4 font-mono text-xs text-foreground">{Math.round(item.confidenceScore * 100)}%</td>
+                  <td className="px-5 py-4 font-mono text-xs text-foreground">
+                    {item.prediction === 'Inconclusive' || isRemotePlaceholderConfidence(item)
+                      ? 'Unavailable'
+                      : `${Math.round(item.confidenceScore * 100)}%`}
+                  </td>
                   <td className="px-5 py-4 text-xs text-muted-foreground">{item.dataset}</td>
                   <td className="px-5 py-4 text-xs text-muted-foreground">{item.createdAt}</td>
                   <td className="px-5 py-4 text-right">

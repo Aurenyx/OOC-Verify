@@ -8,6 +8,7 @@ from app.schemas.verification import (
 from app.services.openrouter_service import analyze_remote_image
 
 import os
+import re
 from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
@@ -138,14 +139,38 @@ async def verify_claim(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Remote verification service is misconfigured (missing OPENROUTER_API_KEY).",
                 ) from None
+
+            # Map internal runtime errors to safe, user-friendly client messages
+            # without forwarding raw provider HTML, exception strings, or raw model output.
+            if "429" in err_msg or "rate limit" in err_msg.lower():
+                safe_client_msg = "Upstream model service is temporarily rate-limited (status 429). Please try again shortly."
+            elif "502" in err_msg or "503" in err_msg or "504" in err_msg:
+                status_match = re.search(r"\b(50[234])\b", err_msg)
+                code_str = status_match.group(1) if status_match else "502"
+                safe_client_msg = f"Upstream model service is temporarily unavailable (status {code_str}). Please try again shortly."
+            elif "status " in err_msg:
+                status_match = re.search(r"\bstatus\s+(\d{3})\b", err_msg)
+                code_str = status_match.group(1) if status_match else "error"
+                safe_client_msg = f"Upstream model request failed with status {code_str}."
+            elif "timed out" in err_msg.lower():
+                safe_client_msg = "Remote model request timed out. Please try again."
+            elif "content safety" in err_msg.lower():
+                safe_client_msg = "The remote model returned a content safety classification instead of a verification prediction."
+            elif "did not provide a recognizable prediction" in err_msg.lower():
+                safe_client_msg = "The remote model did not provide a recognizable prediction."
+            elif "empty response" in err_msg.lower() or "empty reason" in err_msg.lower():
+                safe_client_msg = "The remote model returned an empty response."
+            else:
+                safe_client_msg = "An error occurred while communicating with the remote model service."
+
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Remote verification failed: {err_msg}",
+                detail=f"Remote verification failed: {safe_client_msg}",
             ) from None
-        except Exception as exc:
+        except Exception:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Remote verification failed: {exc}",
+                detail="Remote verification failed: An unexpected error occurred while communicating with the remote model service.",
             ) from None
 
         required_keys = {"prediction", "reason", "visual_evidence", "model"}
@@ -156,6 +181,12 @@ async def verify_claim(
             )
 
         prediction = remote_result["prediction"]
+        if prediction not in {"Genuine", "Misleading", "Inconclusive"}:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Remote verification failed. The model service returned an unrecognized prediction: {prediction}.",
+            )
+
         reason = remote_result["reason"]
         visual_evidence = remote_result["visual_evidence"]
 
@@ -188,6 +219,24 @@ async def verify_claim(
             ),
         ]
 
+        if prediction == "Inconclusive":
+            explanation = (
+                f"Remote multimodal model: {remote_result['model']}. "
+                f"Visual evidence reported by the model: {visual_evidence} "
+                "The remote model determined that the visual evidence was inconclusive or "
+                "insufficient to verify the caption. External evidence retrieval was not performed."
+            )
+            inconsistency_type = "Remote visual ambiguity / inconclusive"
+        else:
+            explanation = (
+                f"Remote multimodal model: {remote_result['model']}. "
+                f"Visual evidence reported by the model: {visual_evidence} "
+                "External evidence retrieval and the frozen research "
+                "fusion pipeline were not executed. The model's prediction "
+                "is not a calibrated confidence estimate."
+            )
+            inconsistency_type = "Remote visual-caption consistency"
+
         return VerificationResult(
             id=str(uuid.uuid4()),
             prediction=prediction,
@@ -199,15 +248,9 @@ async def verify_claim(
             alignmentScore=None,
             reason=reason,
             evidence=[],
-            explanation=(
-                f"Remote multimodal model: {remote_result['model']}. "
-                f"Visual evidence reported by the model: {visual_evidence} "
-                "External evidence retrieval and the frozen research "
-                "fusion pipeline were not executed. The model's prediction "
-                "is not a calibrated confidence estimate."
-            ),
-            inconsistency_type="Remote visual-caption consistency",
-            inconsistencyType="Remote visual-caption consistency",
+            explanation=explanation,
+            inconsistency_type=inconsistency_type,
+            inconsistencyType=inconsistency_type,
             dataset=dataset.strip() if dataset else "Custom Pair",
             ground_truth_label=None,
             groundTruthLabel=None,

@@ -447,6 +447,8 @@ def run_verification(
                 "the image does not sufficiently support the caption."
             )
         else:
+            final_prediction = "Inconclusive"
+            final_confidence = 0.50
             reason = (
                 "The multimodal language model did not return "
                 "a valid Genuine or Misleading prediction."

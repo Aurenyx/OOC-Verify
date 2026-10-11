@@ -819,9 +819,9 @@ def make_final_decision(
 
     elif qwen_prediction == "Genuine":
 
-        final_prediction = "Genuine"
-
         if alignment_prediction == "Genuine":
+
+            final_prediction = "Genuine"
 
             confidence = (
                 0.60
@@ -837,15 +837,30 @@ def make_final_decision(
                 "the image-caption alignment signal."
             )
 
-        else:
+        elif alignment_prediction == "Misleading":
 
-            confidence = 0.60
+            final_prediction = "Inconclusive"
+
+            confidence = 0.50
 
             reason = (
                 "The multimodal model found the image and "
-                "caption visually consistent, although the "
-                "alignment classifier indicated a potentially "
-                "misleading relationship."
+                "caption visually plausible, but the alignment "
+                "classifier indicated a potentially misleading "
+                "mismatch without corroborating external evidence."
+            )
+
+        else:
+
+            final_prediction = "Inconclusive"
+
+            confidence = 0.50
+
+            reason = (
+                "The multimodal model found the image and "
+                "caption visually consistent, but the alignment "
+                "classifier was unavailable and external evidence "
+                "is insufficient to conclusively verify the claim."
             )
 
     # ---------------------------------------------------------
@@ -871,12 +886,12 @@ def make_final_decision(
         )
 
     # ---------------------------------------------------------
-    # 9. No strong signal
+    # 9. No strong signal / Inconclusive
     # ---------------------------------------------------------
 
     else:
 
-        final_prediction = "Genuine"
+        final_prediction = "Inconclusive"
 
         confidence = min(
             0.80,
@@ -887,8 +902,8 @@ def make_final_decision(
         )
 
         reason = (
-            "No strong contradiction was identified by "
-            "the available visual and evidence signals."
+            "Insufficient evidence or unavailable multimodal signals "
+            "to conclusively verify the image-caption claim."
         )
 
     # ---------------------------------------------------------
