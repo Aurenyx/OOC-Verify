@@ -1,18 +1,37 @@
+import logging
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
-def _extract_qwen_prediction(qwen_response: str) -> str:
+logger = logging.getLogger("uvicorn.error")
+
+
+
+def extract_qwen_prediction(qwen_response: Optional[str]) -> Optional[str]:
+    """
+    Extract structured Genuine, Misleading, or Inconclusive from Qwen output.
+    Returns None if unavailable, failed, or unparseable.
+    """
+    if not qwen_response or not isinstance(qwen_response, str):
+        return None
+
+    if "mllm analysis failed:" in qwen_response.lower():
+        return None
+
     match = re.search(
-        r"Prediction:\s*(Genuine|Misleading)",
+        r"Prediction:\s*(Genuine|Misleading|Inconclusive)\b",
         qwen_response,
         re.IGNORECASE,
     )
-
     if match:
         return match.group(1).capitalize()
 
-    return "Pending"
+    return None
+
+
+def _extract_qwen_prediction(qwen_response: str) -> str:
+    return extract_qwen_prediction(qwen_response) or "Pending"
+
 
 
 def _calculate_evidence_scores(
@@ -565,6 +584,35 @@ def _is_contextual_claim(caption: str) -> bool:
     return any(term in text for term in contextual_terms)
 
 
+def _determine_decision_branch(
+    qwen_prediction: str,
+    contextual_claim: bool = False,
+    strong_support: bool = False,
+    strong_contradiction: bool = False,
+    alignment_prediction: str = "Pending",
+    alignment_confidence: float = 0.0,
+) -> str:
+    """Determine the exact final-decision branch that will be selected."""
+    if qwen_prediction == "Genuine":
+        if alignment_prediction == "Genuine":
+            return "1a. Qwen Genuine + Alignment Genuine (agreement)"
+        if alignment_prediction == "Misleading":
+            return "1b. Qwen Genuine + Alignment Misleading (Qwen prioritized)"
+        return "1c. Qwen Genuine + Alignment Other/Pending"
+
+    if qwen_prediction == "Misleading":
+        if alignment_prediction == "Misleading":
+            return "2a. Qwen Misleading + Alignment Misleading (agreement)"
+        if alignment_prediction == "Genuine":
+            return "2b. Qwen Misleading + Alignment Genuine (Qwen prioritized)"
+        return "2c. Qwen Misleading + Alignment Other/Pending"
+
+    if qwen_prediction == "Inconclusive":
+        return "3. Qwen Inconclusive -> Inconclusive fallback"
+
+    return "4. Fallback / Qwen unavailable -> Inconclusive fallback"
+
+
 def make_final_decision(
     alignment_prediction: str,
     alignment_confidence: float,
@@ -575,21 +623,14 @@ def make_final_decision(
     """
     Evidence-aware multimodal decision fusion.
 
-    Signals:
-
-    1. Alignment classifier
-    2. Qwen visual reasoning
-    3. Retrieved external evidence
-    4. Contextual-claim detection
-
-    Important OOC principle:
-
-    External evidence can confirm that a claimed event or fact
-    exists, but it does not automatically prove that the submitted
-    image belongs to that specific event.
-
-    The confidence score is a heuristic decision-confidence score,
-    NOT a calibrated probability.
+    Policy:
+    1. When Qwen returns a valid parsed prediction of 'Genuine' or 'Misleading',
+       that prediction determines the final prediction. Alignment disagreement,
+       missing evidence, or fusion heuristics do not override a valid Qwen verdict.
+    2. Alignment signals and retrieved evidence provide corroboration and calibrate
+       the heuristic decision confidence score (not a calibrated probability).
+    3. When Qwen output is inconclusive, unavailable, or unparseable, the decision
+       falls back safely to 'Inconclusive' (confidence 0.50).
     """
 
     # ---------------------------------------------------------
@@ -631,205 +672,56 @@ def make_final_decision(
         contradiction_score >= 0.70
     )
 
-    # ---------------------------------------------------------
-    # 1. Strong external contradiction
-    # ---------------------------------------------------------
+    # Diagnostic logging immediately before final prediction branches execute
+    branch_selected = _determine_decision_branch(
+        qwen_prediction=qwen_prediction,
+        contextual_claim=contextual_claim,
+        strong_support=strong_support,
+        strong_contradiction=strong_contradiction,
+        alignment_prediction=alignment_prediction,
+        alignment_confidence=alignment_confidence,
+    )
 
-    if strong_contradiction:
-
-        final_prediction = "Misleading"
-
-        confidence = (
-            0.75
-            + (
-                0.15
-                * contradiction_score
-            )
-        )
-
-        reason = (
-            "Retrieved evidence strongly contradicts "
-            "the caption claim."
-        )
-
-    # ---------------------------------------------------------
-    # 2. Strong alignment mismatch + Qwen Genuine
-    #
-    # This protects against obvious visual mismatches.
-    #
-    # Example:
-    # Image: fuel pump
-    # Caption: person walking through a forest
-    #
-    # Alignment classifier:
-    # Misleading with very high confidence
-    #
-    # Qwen:
-    # Genuine
-    #
-    # Result:
-    # Misleading
-    # ---------------------------------------------------------
-
-    elif (
-        qwen_prediction == "Genuine"
-        and alignment_prediction == "Misleading"
-        and alignment_confidence >= 0.90
-    ):
-
-        final_prediction = "Misleading"
-
-        confidence = (
-            0.65
-            + (
-                0.20
-                * alignment_confidence
-            )
-        )
-
-        reason = (
-            "The multimodal model considered the caption visually "
-            "plausible, but the alignment classifier showed a very "
-            "strong mismatch between the image and caption."
-        )
+    logger.info(
+        "[DECISION-DIAG] Pre-decision signals:\n"
+        "  - qwen_prediction: %s\n"
+        "  - contextual_claim: %s\n"
+        "  - strong_support: %s (support_score=%.4f)\n"
+        "  - strong_contradiction: %s (contradiction_score=%.4f)\n"
+        "  - alignment_prediction: %s\n"
+        "  - alignment_confidence: %.4f\n"
+        "  - exact final-decision branch selected: %s",
+        qwen_prediction,
+        contextual_claim,
+        strong_support,
+        support_score,
+        strong_contradiction,
+        contradiction_score,
+        alignment_prediction,
+        alignment_confidence,
+        branch_selected,
+    )
 
     # ---------------------------------------------------------
-    # 3. Strong external support + Qwen Genuine +
-    #    contextual claim + alignment mismatch
-    #
-    # This is the main OOC protection.
-    #
-    # Evidence proves that the claimed event exists.
-    # It does NOT prove that the submitted image belongs
-    # to that event.
+    # 1. Qwen says Genuine
     # ---------------------------------------------------------
 
-    elif (
-        strong_support
-        and qwen_prediction == "Genuine"
-        and contextual_claim
-        and alignment_prediction == "Misleading"
-    ):
-
-        final_prediction = "Misleading"
-
-        confidence = (
-            0.65
-            + (
-                0.20
-                * alignment_confidence
-            )
-        )
-
-        reason = (
-            "Retrieved evidence confirms the captioned event, "
-            "but the image-caption alignment indicates that the "
-            "submitted image may be out of context for the "
-            "specific event described."
-        )
-
-    # ---------------------------------------------------------
-    # 4. Strong external support + Qwen Genuine
-    #
-    # Normal genuine case.
-    # ---------------------------------------------------------
-
-    elif (
-        strong_support
-        and qwen_prediction == "Genuine"
-    ):
+    if qwen_prediction == "Genuine":
 
         final_prediction = "Genuine"
-
-        confidence = (
-            0.75
-            + (
-                0.15
-                * support_score
-            )
-        )
-
-        reason = (
-            "The image-caption relationship is visually "
-            "consistent and retrieved evidence strongly "
-            "supports the caption."
-        )
-
-    # ---------------------------------------------------------
-    # 5. Strong external support + Qwen Misleading
-    # ---------------------------------------------------------
-
-    elif (
-        strong_support
-        and qwen_prediction == "Misleading"
-        and contextual_claim
-        and alignment_prediction == "Genuine"
-    ):
-
-        final_prediction = "Genuine"
-
-        confidence = (
-            0.65
-            + (
-                0.20
-                * support_score
-            )
-        )
-
-        reason = (
-            "Retrieved evidence strongly supports the "
-            "captioned contextual claim, and the image-caption "
-            "alignment is consistent. The multimodal model "
-            "could not independently establish the full event "
-            "from visual content alone, which is expected for "
-            "contextual news claims."
-        )
-
-    # ---------------------------------------------------------
-    # 6. Qwen says Misleading without strong evidence
-    # ---------------------------------------------------------
-
-    elif qwen_prediction == "Misleading":
-
-        final_prediction = "Misleading"
-
-        if alignment_prediction == "Misleading":
-
-            confidence = (
-                0.60
-                + (
-                    0.20
-                    * alignment_confidence
-                )
-            )
-
-        else:
-
-            confidence = 0.60
-
-        reason = (
-            "The multimodal model found that the image "
-            "does not provide sufficient visual evidence "
-            "to establish the captioned claim."
-        )
-
-    # ---------------------------------------------------------
-    # 7. Qwen says Genuine
-    # ---------------------------------------------------------
-
-    elif qwen_prediction == "Genuine":
 
         if alignment_prediction == "Genuine":
 
-            final_prediction = "Genuine"
-
-            confidence = (
-                0.60
-                + (
-                    0.20
-                    * alignment_confidence
-                )
+            confidence = min(
+                0.85,
+                0.65 + (0.20 * alignment_confidence),
             )
+
+            if strong_support:
+                confidence = max(
+                    confidence,
+                    0.75 + (0.15 * support_score),
+                )
 
             reason = (
                 "The multimodal model found the image and "
@@ -839,67 +731,120 @@ def make_final_decision(
 
         elif alignment_prediction == "Misleading":
 
-            final_prediction = "Inconclusive"
+            confidence = 0.60
 
-            confidence = 0.50
+            if strong_support:
+                confidence = max(
+                    confidence,
+                    0.60 + (0.15 * support_score),
+                )
 
             reason = (
                 "The multimodal model found the image and "
-                "caption visually plausible, but the alignment "
-                "classifier indicated a potentially misleading "
-                "mismatch without corroborating external evidence."
+                "caption visually consistent. The alignment "
+                "classifier indicated a potential mismatch, "
+                "but visual reasoning confirmed genuine consistency."
             )
 
         else:
 
-            final_prediction = "Inconclusive"
+            confidence = 0.60
 
-            confidence = 0.50
+            if strong_support:
+                confidence = max(
+                    confidence,
+                    0.75 + (0.15 * support_score),
+                )
 
             reason = (
                 "The multimodal model found the image and "
-                "caption visually consistent, but the alignment "
-                "classifier was unavailable and external evidence "
-                "is insufficient to conclusively verify the claim."
+                "caption visually consistent."
             )
 
     # ---------------------------------------------------------
-    # 8. Qwen unavailable
+    # 2. Qwen says Misleading
     # ---------------------------------------------------------
 
-    elif alignment_prediction == "Misleading":
+    elif qwen_prediction == "Misleading":
 
         final_prediction = "Misleading"
 
-        confidence = min(
-            0.80,
-            max(
-                0.55,
-                alignment_confidence,
-            ),
-        )
+        if alignment_prediction == "Misleading":
+
+            confidence = min(
+                0.85,
+                0.65 + (0.20 * alignment_confidence),
+            )
+
+            if strong_contradiction:
+                confidence = max(
+                    confidence,
+                    0.75 + (0.15 * contradiction_score),
+                )
+
+            reason = (
+                "The multimodal model identified a potentially "
+                "misleading image-caption relationship, supported by "
+                "the image-caption alignment signal."
+            )
+
+        elif alignment_prediction == "Genuine":
+
+            confidence = 0.60
+
+            if strong_contradiction:
+                confidence = max(
+                    confidence,
+                    0.60 + (0.15 * contradiction_score),
+                )
+
+            reason = (
+                "The multimodal model identified a potentially "
+                "misleading image-caption relationship. Although "
+                "the alignment classifier indicated semantic alignment, "
+                "visual reasoning determined the image does not "
+                "support the caption."
+            )
+
+        else:
+
+            confidence = 0.60
+
+            if strong_contradiction:
+                confidence = max(
+                    confidence,
+                    0.75 + (0.15 * contradiction_score),
+                )
+
+            reason = (
+                "The multimodal model identified a potentially "
+                "misleading image-caption relationship. Review the "
+                "visual explanation and available evidence."
+            )
+
+    # ---------------------------------------------------------
+    # 3. Qwen says Inconclusive
+    # ---------------------------------------------------------
+
+    elif qwen_prediction == "Inconclusive":
+
+        final_prediction = "Inconclusive"
+        confidence = 0.50
 
         reason = (
-            "The multimodal reasoning result was unavailable, "
-            "so the alignment classifier detected a potentially "
-            "misleading relationship."
+            "The visual model could neither establish nor "
+            "contradict the caption using the available image "
+            "evidence. Further contextual evidence may be needed."
         )
 
     # ---------------------------------------------------------
-    # 9. No strong signal / Inconclusive
+    # 4. Fallback: Qwen unavailable, unparseable, or failed
     # ---------------------------------------------------------
 
     else:
 
         final_prediction = "Inconclusive"
-
-        confidence = min(
-            0.80,
-            max(
-                0.50,
-                alignment_confidence,
-            ),
-        )
+        confidence = 0.50
 
         reason = (
             "Insufficient evidence or unavailable multimodal signals "
@@ -919,24 +864,20 @@ def make_final_decision(
     )
 
     # ---------------------------------------------------------
-    # Explanation
+    # Explanation (substantive MLLM reasoning)
     # ---------------------------------------------------------
 
-    explanation = (
-        f"Final prediction: {final_prediction}. "
-        f"Alignment classifier predicted "
-        f"{alignment_prediction} with confidence "
-        f"{alignment_confidence:.2f}. "
-        f"Qwen visual reasoning predicted "
-        f"{qwen_prediction}. "
-        f"Contextual claim detected: "
-        f"{contextual_claim}. "
-        f"Retrieved evidence contained "
-        f"{len(evidence_items)} items, with "
-        f"{support_score:.2f} support score and "
-        f"{contradiction_score:.2f} contradiction score. "
-        f"{reason}"
+    is_qwen_valid = (
+        bool(qwen_response)
+        and isinstance(qwen_response, str)
+        and bool(qwen_response.strip())
+        and "mllm analysis failed" not in qwen_response.lower()
     )
+
+    if is_qwen_valid:
+        explanation = qwen_response.strip()
+    else:
+        explanation = "MLLM explanation unavailable"
 
     # ---------------------------------------------------------
     # Structured result

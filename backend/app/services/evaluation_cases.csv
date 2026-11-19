@@ -1,0 +1,3 @@
+image_path,caption,expected_label
+test_images/test_image.jpg,A person wearing a green shirt,Genuine
+test_images/test_image.jpg,A person wearing a bright red shirt,Misleading

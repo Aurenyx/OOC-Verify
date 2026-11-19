@@ -4,9 +4,11 @@ from app.services.decision_service import make_final_decision
 
 class TestDecisionFusionSafety(unittest.TestCase):
     """
-    Unit tests ensuring the OOC-Verify decision fusion engine safely handles
-    missing, failed, conflicting, or unavailable upstream signals without
-    silently defaulting to Genuine.
+    Unit tests ensuring the OOC-Verify decision fusion engine implements
+    the updated prediction policy:
+    1. Valid Qwen prediction (Genuine or Misleading) determines the final prediction.
+    2. Alignment disagreement or missing evidence does not override valid Qwen predictions.
+    3. Inconclusive is used safely as fallback when Qwen fails or output is invalid/inconclusive.
     """
 
     def test_missing_qwen_output_returns_inconclusive(self):
@@ -49,11 +51,10 @@ class TestDecisionFusionSafety(unittest.TestCase):
         )
         self.assertEqual(decision["prediction"], "Inconclusive")
 
-    def test_conflicting_qwen_and_alignment_returns_inconclusive(self):
+    def test_qwen_genuine_with_alignment_misleading_returns_genuine(self):
         """
-        When Qwen says Genuine but Alignment classifier says Misleading
-        (with confidence < 0.90 and no strong external evidence),
-        the conflicting visual signals must produce Inconclusive instead of Genuine.
+        When Qwen says Genuine but Alignment classifier says Misleading,
+        the valid Qwen prediction determines the final prediction (Genuine).
         """
         decision = make_final_decision(
             alignment_prediction="Misleading",
@@ -62,9 +63,10 @@ class TestDecisionFusionSafety(unittest.TestCase):
             evidence_items=[],
             caption="A sports car parked in front of a modern house",
         )
-        self.assertEqual(decision["prediction"], "Inconclusive")
-        self.assertEqual(decision["confidence_score"], 0.50)
-        self.assertIn("alignment classifier indicated a potentially misleading mismatch", decision["reason"])
+        self.assertEqual(decision["prediction"], "Genuine")
+        self.assertEqual(decision["qwen_prediction"], "Genuine")
+        self.assertEqual(decision["confidence_score"], 0.60)
+        self.assertIn("visual reasoning confirmed genuine consistency", decision["reason"])
 
     def test_preserves_legitimate_genuine_agreement(self):
         """When Qwen and Alignment both agree on Genuine, return Genuine."""
@@ -94,22 +96,22 @@ class TestDecisionFusionSafety(unittest.TestCase):
         self.assertGreaterEqual(decision["support_score"], 0.70)
 
     def test_preserves_legitimate_misleading_from_evidence_contradiction(self):
-        """When retrieved evidence strongly contradicts the claim, return Misleading."""
+        """When Qwen identifies Misleading and evidence contradicts the claim, return Misleading."""
         contradicting_evidence = [
             {"relation": "contradicts", "relevance": 0.85, "source": "AP News", "title": "Fact check debunk"}
         ]
         decision = make_final_decision(
-            alignment_prediction="Genuine",
+            alignment_prediction="Misleading",
             alignment_confidence=0.80,
-            qwen_response="Prediction: Genuine\nReason: Visually looks like an explosion.",
+            qwen_response="Prediction: Misleading\nReason: Visually does not match explosion claim.",
             evidence_items=contradicting_evidence,
             caption="Recent explosion at city refinery",
         )
         self.assertEqual(decision["prediction"], "Misleading")
-        self.assertIn("Retrieved evidence strongly contradicts", decision["reason"])
+        self.assertGreaterEqual(decision["confidence_score"], 0.75)
 
     def test_preserves_legitimate_misleading_from_qwen(self):
-        """When Qwen identifies visual inconsistency, return Misleading."""
+        """When Qwen identifies visual inconsistency, return Misleading despite alignment Genuine."""
         decision = make_final_decision(
             alignment_prediction="Genuine",
             alignment_confidence=0.55,
@@ -118,11 +120,11 @@ class TestDecisionFusionSafety(unittest.TestCase):
             caption="Heavy snowstorm in Alaska last night",
         )
         self.assertEqual(decision["prediction"], "Misleading")
+        self.assertEqual(decision["confidence_score"], 0.60)
 
-    def test_preserves_legitimate_ooc_protection(self):
+    def test_preserves_qwen_genuine_with_contextual_claim(self):
         """
-        When external evidence confirms event, but caption is contextual
-        and alignment classifier flags a mismatch, return Misleading (out of context).
+        When Qwen predicts Genuine for a contextual claim, alignment mismatch does not override.
         """
         supporting_evidence = [
             {"relation": "supports", "relevance": 0.80, "source": "BBC", "title": "G7 leaders meet in Berlin"}
@@ -134,11 +136,10 @@ class TestDecisionFusionSafety(unittest.TestCase):
             evidence_items=supporting_evidence,
             caption="G7 leaders summit meeting in berlin 2026",
         )
-        self.assertEqual(decision["prediction"], "Misleading")
-        self.assertIn("submitted image may be out of context", decision["reason"])
+        self.assertEqual(decision["prediction"], "Genuine")
 
     def test_preserves_qwen_unavailable_with_alignment_misleading(self):
-        """When Qwen is unavailable but Alignment is Misleading, return Misleading."""
+        """When Qwen is unavailable, alignment alone cannot decide; return Inconclusive."""
         decision = make_final_decision(
             alignment_prediction="Misleading",
             alignment_confidence=0.75,
@@ -146,12 +147,13 @@ class TestDecisionFusionSafety(unittest.TestCase):
             evidence_items=[],
             caption="Breaking news claim",
         )
-        self.assertEqual(decision["prediction"], "Misleading")
+        self.assertEqual(decision["prediction"], "Inconclusive")
+        self.assertEqual(decision["confidence_score"], 0.50)
 
-    def test_rule_7c_qwen_genuine_alignment_unavailable_without_evidence_returns_inconclusive(self):
+    def test_qwen_genuine_alignment_unavailable_without_evidence_preserves_genuine(self):
         """
-        Rule 7c: When Qwen predicts Genuine but the alignment classifier is unavailable
-        and external evidence is insufficient, return Inconclusive rather than Genuine.
+        When Qwen predicts Genuine and alignment classifier is unavailable,
+        preserve Genuine (base confidence 0.60).
         """
         decision = make_final_decision(
             alignment_prediction="Pending",
@@ -160,14 +162,13 @@ class TestDecisionFusionSafety(unittest.TestCase):
             evidence_items=[],
             caption="A generic scene described in text",
         )
-        self.assertEqual(decision["prediction"], "Inconclusive")
-        self.assertEqual(decision["confidence_score"], 0.50)
-        self.assertIn("alignment classifier was unavailable and external evidence is insufficient", decision["reason"])
+        self.assertEqual(decision["prediction"], "Genuine")
+        self.assertEqual(decision["confidence_score"], 0.60)
 
     def test_rule_4_qwen_genuine_alignment_unavailable_with_strong_evidence_preserves_genuine(self):
         """
-        Rule 4: When Qwen predicts Genuine and alignment is unavailable,
-        but strong external evidence supports the caption, preserve Genuine.
+        When Qwen predicts Genuine and alignment is unavailable,
+        and strong external evidence supports the caption, preserve Genuine with evidence boost.
         """
         strong_evidence = [
             {"relation": "supports", "relevance": 0.85, "source": "BBC News", "title": "Verified event"}
@@ -181,6 +182,66 @@ class TestDecisionFusionSafety(unittest.TestCase):
         )
         self.assertEqual(decision["prediction"], "Genuine")
         self.assertGreaterEqual(decision["support_score"], 0.70)
+        self.assertGreater(decision["confidence_score"], 0.70)
+
+    def test_flooded_road_compatible_caption_is_genuine(self):
+        """
+        User problem case: Qwen Genuine + alignment Misleading (0.5506) -> Genuine.
+        """
+        decision = make_final_decision(
+            alignment_prediction="Misleading",
+            alignment_confidence=0.5506,
+            qwen_response=(
+                "Prediction: Genuine\n"
+                "Reason: The image shows a flooded road."
+            ),
+            evidence_items=[],
+            caption="Residents stand beside a road flooded after heavy rain.",
+        )
+
+        self.assertEqual(decision["prediction"], "Genuine")
+        self.assertEqual(decision["confidence_score"], 0.60)
+
+    def test_flooded_road_vs_snowy_temple_is_misleading(self):
+        decision = make_final_decision(
+            alignment_prediction="Misleading",
+            alignment_confidence=0.9729,
+            qwen_response=(
+                "Prediction: Misleading\n"
+                "Reason: The image shows a flooded road, not a snowy temple."
+            ),
+            evidence_items=[],
+            caption=(
+                "A group of tourists gather outside a snow-covered "
+                "mountain temple during a winter festival."
+            ),
+        )
+
+        self.assertEqual(decision["prediction"], "Misleading")
+        self.assertGreater(decision["confidence_score"], 0.70)
+
+    def test_unverified_mumbai_contextual_claim_is_misleading(self):
+        """
+        When Qwen predicts Misleading, contextual claim does not demote to Inconclusive.
+        """
+        decision = make_final_decision(
+            alignment_prediction="Misleading",
+            alignment_confidence=0.5000,
+            qwen_response=(
+                "Prediction: Misleading\n"
+                "Reason: The location and date cannot be established."
+            ),
+            evidence_items=[
+                {"relation": "insufficient", "relevance": 0.3864}
+            ],
+            caption=(
+                "Residents gather beside a flooded road in Mumbai "
+                "after heavy monsoon rainfall in July 2025."
+            ),
+        )
+
+        self.assertEqual(decision["prediction"], "Misleading")
+        self.assertEqual(decision["qwen_prediction"], "Misleading")
 
 
 if __name__ == "__main__":

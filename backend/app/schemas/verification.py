@@ -51,6 +51,16 @@ class VerificationResult(BaseModel):
         description="Frontend camelCase alias for alignment score",
     )
 
+    # Structured Qwen MLLM visual reasoning prediction
+    qwen_prediction: Optional[str] = Field(
+        None,
+        description="Structured Qwen MLLM prediction: Genuine | Misleading | Inconclusive | None",
+    )
+    qwenPrediction: Optional[str] = Field(
+        None,
+        description="Frontend camelCase alias for structured Qwen MLLM prediction",
+    )
+
     reason: str = Field(
         ...,
         description="Reason statement for the prediction",

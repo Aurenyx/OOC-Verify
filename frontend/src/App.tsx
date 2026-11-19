@@ -780,6 +780,42 @@ function ReportPage({ verification }: { verification: Verification }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const displayExplanation = (() => {
+    const rawExplanation = verification.explanation?.trim();
+    const isLegacyPipelineExplanation = Boolean(
+      rawExplanation?.startsWith('Final prediction:') &&
+      rawExplanation?.includes('Alignment classifier predicted')
+    );
+
+    if (
+      rawExplanation &&
+      !isLegacyPipelineExplanation &&
+      !rawExplanation.toLowerCase().includes('mllm analysis failed')
+    ) {
+      return rawExplanation;
+    }
+
+    const mllmStage = verification.pipelineStages?.find(
+      (s) => s.stage === 'mllm_reasoning' || s.stage.toLowerCase() === 'mllm_reasoning'
+    );
+
+    if (
+      mllmStage &&
+      mllmStage.status !== 'failed' &&
+      mllmStage.detail &&
+      !mllmStage.detail.toLowerCase().includes('mllm analysis failed') &&
+      mllmStage.detail !== 'Multimodal consistency reasoning evaluated.'
+    ) {
+      return mllmStage.detail.trim();
+    }
+
+    if (rawExplanation && !isLegacyPipelineExplanation) {
+      return rawExplanation;
+    }
+
+    return 'MLLM explanation unavailable';
+  })();
+
   const handleCopyId = () => {
     navigator.clipboard.writeText(verification.id);
     setCopied(true);
@@ -953,7 +989,9 @@ function ReportPage({ verification }: { verification: Verification }) {
             </div>
           </ReportBlock>
           <ReportBlock number="04" title="Explanation" icon={<Sparkles className="h-4 w-4" />}>
-            <p data-testid="text-report-explanation">{verification.explanation}</p>
+            <p data-testid="text-report-explanation" className="whitespace-pre-line">
+              {displayExplanation}
+            </p>
           </ReportBlock>
           <section className="rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-7">
             <SectionHeading title="Pipeline trace" eyebrow="Run metadata" />

@@ -1,3 +1,10 @@
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
 from app.services.qwen_service import analyze_image
 
 IMAGE_PATH = r"news_clippings\experiments\images\test.jpg"

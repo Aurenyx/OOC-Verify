@@ -47,6 +47,18 @@ news_clippings/
 visualnews/
 attached_assets/
 
+
+# ---------- Large datasets ----------
+visualnews/
+attached_assets/
+
+# Track only the trained alignment classifier
+news_clippings/*
+!news_clippings/experiments/
+news_clippings/experiments/*
+!news_clippings/experiments/alignment_classifier.joblib
+
+
 # ---------- Local project data ----------
 .conversation/
 screenshots/
@@ -113,3 +125,11 @@ backend/**/*_backup.py
 # ---------- Old root-level evaluation files ----------
 /evaluation_*.csv
 /evaluation_images_contact_sheet.jpg
+
+# Local evaluation outputs and test assets
+backend/results/
+backend/test_images/
+evaluation/runs/
+
+# Temporary source backups
+*.before-visual-evidence

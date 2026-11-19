@@ -1222,8 +1222,9 @@ class TestVerificationApiRemoteRoute(unittest.TestCase):
 
     def test_cors_preflight_options_for_deployed_frontend(self):
         deployed_origin = "https://ooc-verify-1.onrender.com"
-        with TestClient(app) as client:
-            resp = client.options(
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote"}):
+            with TestClient(app) as client:
+                resp = client.options(
                 "/api/v1/verify",
                 headers={
                     "Origin": deployed_origin,
@@ -1247,6 +1248,269 @@ class TestVerificationApiRemoteRoute(unittest.TestCase):
 
             self.assertEqual(resp.status_code, 400)
             self.assertNotIn("access-control-allow-origin", resp.headers)
+
+    def test_api_verify_remote_mode_evidence_retrieval_success(self):
+        sample_evidence = [
+            {
+                "source": "Global News",
+                "title": "Summit officially begins in Geneva",
+                "publishedDate": "Mon, 12 Oct 2026 12:00:00 GMT",
+                "retrievedDate": "2026-10-12T12:05:00Z",
+                "relation": "insufficient",
+                "relevance": 0.0,
+                "excerpt": "Leaders gathered in Geneva for the scheduled diplomatic summit.",
+                "url": "https://example.com/news/summit-geneva",
+            }
+        ]
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Genuine",
+                    "reason": "Visual evidence matches caption.",
+                    "visual_evidence": "Geneva conference center and diplomatic leaders.",
+                    "model": "openrouter/free",
+                },
+            ), patch(
+                "app.api.routes.verification.retrieve_evidence",
+                return_value=sample_evidence,
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "Leaders meet at Geneva summit"},
+                    )
+
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(data["prediction"], "Genuine")
+                self.assertEqual(data["confidence_score"], 0.0)
+                self.assertEqual(len(data["evidence"]), 1)
+                ev = data["evidence"][0]
+                self.assertEqual(ev["source"], "Global News")
+                self.assertEqual(ev["title"], "Summit officially begins in Geneva")
+                # Ensure plain URL string, not markdown link syntax
+                self.assertEqual(ev["url"], "https://example.com/news/summit-geneva")
+                self.assertTrue(ev["url"].startswith("https://"))
+                self.assertNotIn("[", ev["url"])
+                self.assertNotIn("]", ev["url"])
+                self.assertIn("diplomatic summit", ev["excerpt"])
+                self.assertIn(ev["relation"], {"supports", "contradicts", "insufficient", "irrelevant"})
+                self.assertGreater(ev["relevance"], 0.0)
+
+                # Honest pipeline stage check
+                stage = data["pipeline_stages"][2]
+                self.assertEqual(stage["stage"], "evidence_retrieval")
+                self.assertEqual(stage["status"], "completed")
+                self.assertIn("Retrieved and analyzed 1", stage["detail"])
+                self.assertEqual(stage["score"], 1.0)
+
+    def test_api_verify_remote_mode_evidence_retrieval_partial_failure(self):
+        sample_partial_evidence = [
+            {
+                "source": "City Press",
+                "title": "Diplomats arrive in Geneva for preliminary talks",
+                "publishedDate": "Mon, 12 Oct 2026 11:00:00 GMT",
+                "retrievedDate": "2026-10-12T12:05:00Z",
+                "relation": "insufficient",
+                "relevance": 0.0,
+                "excerpt": "Preliminary talks began in Geneva today.",
+                "url": "https://example.com/news/preliminary-talks",
+                "partial_retrieval": True,
+            }
+        ]
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Genuine",
+                    "reason": "Visual evidence matches caption.",
+                    "visual_evidence": "Geneva conference center and diplomatic leaders.",
+                    "model": "openrouter/free",
+                },
+            ), patch(
+                "app.api.routes.verification.retrieve_evidence",
+                return_value=sample_partial_evidence,
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "Leaders meet at Geneva summit"},
+                    )
+
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(data["prediction"], "Genuine")
+                self.assertEqual(data["confidence_score"], 0.0)
+                self.assertEqual(len(data["evidence"]), 1)
+
+                # Ensure plain URL string, not markdown link syntax
+                ev = data["evidence"][0]
+                self.assertEqual(ev["url"], "https://example.com/news/preliminary-talks")
+                self.assertTrue(ev["url"].startswith("https://"))
+                self.assertNotIn("[", ev["url"])
+                self.assertNotIn("]", ev["url"])
+                # Ensure internal metadata is not exposed in public API
+                self.assertNotIn("partial_retrieval", ev)
+
+                # Honest pipeline stage check: reports partial retrieval honestly
+                stage = data["pipeline_stages"][2]
+                self.assertEqual(stage["stage"], "evidence_retrieval")
+                self.assertEqual(stage["status"], "completed")
+                self.assertIn("partial retrieval", stage["detail"].lower())
+                self.assertIn("search queries failed", stage["detail"].lower())
+                self.assertEqual(stage["score"], 1.0)
+
+    def test_api_verify_remote_mode_evidence_retrieval_zero_results(self):
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Misleading",
+                    "reason": "Image does not correspond to claim.",
+                    "visual_evidence": "A generic field.",
+                    "model": "openrouter/free",
+                },
+            ), patch(
+                "app.api.routes.verification.retrieve_evidence",
+                return_value=[],
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "Rare anomaly observed on field"},
+                    )
+
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(data["prediction"], "Misleading")
+                self.assertEqual(data["confidence_score"], 0.0)
+                self.assertEqual(data["evidence"], [])
+
+                # Honest pipeline stage check: supported skipped status, never marked completed
+                stage = data["pipeline_stages"][2]
+                self.assertEqual(stage["stage"], "evidence_retrieval")
+                self.assertEqual(stage["status"], "skipped")
+                self.assertIn("No external evidence articles found", stage["detail"])
+                self.assertEqual(stage["score"], 0.0)
+
+    def test_api_verify_remote_mode_evidence_retrieval_failure_fallback(self):
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Genuine",
+                    "reason": "Photo depicts the described scene.",
+                    "visual_evidence": "Officials at press conference.",
+                    "model": "openrouter/free",
+                },
+            ), patch(
+                "app.api.routes.verification.retrieve_evidence",
+                side_effect=RuntimeError("Google News RSS network connection timed out"),
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "President announces reform policy"},
+                    )
+
+                # Verification still succeeds with 200 and model prediction intact
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(data["prediction"], "Genuine")
+                self.assertEqual(data["confidence_score"], 0.0)
+                self.assertEqual(data["evidence"], [])
+
+                # Honest pipeline stage check: supported failed status
+                stage = data["pipeline_stages"][2]
+                self.assertEqual(stage["stage"], "evidence_retrieval")
+                self.assertEqual(stage["status"], "failed")
+                self.assertIn("External evidence retrieval failed", stage["detail"])
+                self.assertIsNone(stage["score"])
+
+    def test_api_verify_remote_mode_model_prediction_unchanged_by_retrieval(self):
+        sample_conflicting_evidence = [
+            {
+                "source": "FactCheck Wire",
+                "title": "Claim confirmed by multiple sources",
+                "publishedDate": "Mon, 12 Oct 2026 12:00:00 GMT",
+                "retrievedDate": "2026-10-12T12:05:00Z",
+                "relation": "supports",
+                "relevance": 0.95,
+                "excerpt": "Officials confirmed that the event took place as described.",
+                "url": "https://example.com/news/confirmatory-article",
+            }
+        ]
+        # Remote model says Misleading; evidence strongly supports claim.
+        # Remote mode must preserve the remote model's prediction and confidence without alteration.
+        with patch.dict(os.environ, {"OOC_VERIFY_MODE": "remote", "OPENROUTER_API_KEY": "test-key"}):
+            with patch(
+                "app.api.routes.verification.analyze_remote_image",
+                return_value={
+                    "prediction": "Misleading",
+                    "reason": "Model evaluated image as inconsistent.",
+                    "visual_evidence": "Visual artifacts found in image.",
+                    "model": "openrouter/free",
+                },
+            ), patch(
+                "app.api.routes.verification.retrieve_evidence",
+                return_value=sample_conflicting_evidence,
+            ):
+                with TestClient(app) as client:
+                    resp = client.post(
+                        "/api/v1/verify",
+                        files={"image": ("test.jpg", self.dummy_image, "image/jpeg")},
+                        data={"caption": "Event confirmed by multiple officials"},
+                    )
+
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                # Prediction and confidence must be unchanged
+                self.assertEqual(data["prediction"], "Misleading")
+                self.assertEqual(data["confidence_score"], 0.0)
+                self.assertEqual(len(data["evidence"]), 1)
+                # Ensure plain URL string, not markdown link syntax
+                self.assertEqual(data["evidence"][0]["url"], "https://example.com/news/confirmatory-article")
+                self.assertNotIn("[", data["evidence"][0]["url"])
+
+    @patch("app.services.evidence_service._retrieve_google_news")
+    def test_retrieve_evidence_raises_on_network_failure(self, mock_retrieve):
+        from app.services.evidence_service import retrieve_evidence
+        mock_retrieve.side_effect = RuntimeError("Network unreachable")
+        with self.assertRaises(RuntimeError):
+            retrieve_evidence("President announces reform policy", max_results=5)
+
+    @patch("app.services.evidence_service._retrieve_google_news")
+    def test_retrieve_evidence_partial_failure_tags_items(self, mock_retrieve):
+        from app.services.evidence_service import retrieve_evidence
+
+        def fake_retrieve(query, max_results=10):
+            if "news" in query:
+                raise RuntimeError("Rate limit on alternative query")
+            return [
+                {
+                    "source": "News Org",
+                    "title": "Geneva summit kicks off",
+                    "publishedDate": "2026-10-12",
+                    "retrievedDate": "2026-10-12T12:00:00Z",
+                    "relation": "insufficient",
+                    "relevance": 0.0,
+                    "excerpt": "Summit details.",
+                    "url": "https://example.com/news/summit-kicks-off",
+                    "search_query": query,
+                }
+            ]
+
+        mock_retrieve.side_effect = fake_retrieve
+        results = retrieve_evidence("Geneva summit begins today", max_results=5)
+        self.assertGreaterEqual(len(results), 1)
+        self.assertTrue(results[0].get("partial_retrieval"))
+        self.assertEqual(results[0]["url"], "https://example.com/news/summit-kicks-off")
+        self.assertNotIn("[", results[0]["url"])
 
 
 if __name__ == "__main__":

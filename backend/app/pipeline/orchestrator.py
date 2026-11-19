@@ -15,10 +15,13 @@ from app.services.alignment_classifier_service import (
 )
 from app.services.evidence_service import retrieve_evidence
 from app.services.evidence_analysis_service import analyze_evidence
-from app.services.decision_service import make_final_decision
+from app.services.decision_service import (
+    make_final_decision,
+    extract_qwen_prediction,
+)
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 def _run_qwen(
@@ -27,6 +30,8 @@ def _run_qwen(
     caption: str,
 ) -> str:
     """Run Qwen on a temporary image file."""
+
+    logger.info("[QWEN-TRACE] _run_qwen() entered")
 
     suffix = os.path.splitext(filename or ".jpg")[1].lower()
 
@@ -43,13 +48,19 @@ def _run_qwen(
             temp_file.write(image_bytes)
             temp_image_path = temp_file.name
 
-        return analyze_image(
+        logger.info(
+            "[QWEN-TRACE] Temporary image written to '%s', calling analyze_image()",
+            temp_image_path,
+        )
+        result = analyze_image(
             image_path=temp_image_path,
             caption=caption,
         )
+        logger.info("[QWEN-TRACE] analyze_image() completed successfully")
+        return result
 
     except Exception as exc:
-        logger.exception("Qwen analysis failed.")
+        logger.exception("[QWEN-TRACE] Qwen analysis failed: %s", exc)
 
         return (
             "Prediction: Unknown\n"
@@ -63,20 +74,12 @@ def _run_qwen(
             and os.path.exists(temp_image_path)
         ):
             os.remove(temp_image_path)
+        logger.info("[QWEN-TRACE] _run_qwen() finished")
 
 
 def _parse_qwen_prediction(qwen_response: str) -> str:
-    """Extract Genuine/Misleading from Qwen response."""
-
-    response_lower = qwen_response.lower()
-
-    if "prediction: misleading" in response_lower:
-        return "Misleading"
-
-    if "prediction: genuine" in response_lower:
-        return "Genuine"
-
-    return "Pending"
+    """Extract Genuine/Misleading/Inconclusive from Qwen response."""
+    return extract_qwen_prediction(qwen_response) or "Pending"
 
 
 def _calculate_simple_confidence(
@@ -123,7 +126,14 @@ def run_verification(
             f"Unsupported configuration: {configuration}"
         )
 
+    logger.info(
+        "[ORCHESTRATOR-BOUNDARY] run_verification() started: configuration='%s', filename='%s'",
+        configuration,
+        filename,
+    )
+
     stages = []
+    structured_qwen_prediction: Optional[str] = None
 
     # =========================================================
     # 1. Input validation
@@ -156,6 +166,7 @@ def run_verification(
     # =========================================================
 
     if configuration == "alignment_only":
+        logger.info("[ORCHESTRATOR-BOUNDARY] alignment_only mode: skipping Qwen MLLM reasoning")
 
         # -----------------------------------------------------
         # 2. CLIP alignment
@@ -284,12 +295,7 @@ def run_verification(
                 "image-caption semantic alignment."
             )
 
-        explanation = (
-            "Alignment-only configuration used the CLIP "
-            "image-caption alignment score followed by the "
-            "trained alignment classifier. MLLM reasoning and "
-            "external evidence were intentionally excluded."
-        )
+        explanation = "MLLM explanation unavailable"
 
         stages.append(
             PipelineStageResult(
@@ -318,6 +324,7 @@ def run_verification(
     # =========================================================
 
     elif configuration == "mllm_only":
+        logger.info("[ORCHESTRATOR-BOUNDARY] mllm_only mode: invoking _run_qwen()")
 
         # -----------------------------------------------------
         # 2. Image preparation
@@ -382,6 +389,7 @@ def run_verification(
         qwen_prediction = _parse_qwen_prediction(
             qwen_response
         )
+        structured_qwen_prediction = extract_qwen_prediction(qwen_response)
 
         qwen_confidence = _calculate_simple_confidence(
             qwen_prediction,
@@ -391,7 +399,11 @@ def run_verification(
         stages.append(
             PipelineStageResult(
                 stage="mllm_reasoning",
-                status="completed",
+                status=(
+                    "failed"
+                    if "mllm analysis failed:" in qwen_response.lower()
+                    else "completed"
+                ),
                 detail=qwen_response[:1000],
                 score=qwen_confidence,
             )
@@ -454,12 +466,15 @@ def run_verification(
                 "a valid Genuine or Misleading prediction."
             )
 
-        explanation = (
-            "MLLM-only configuration used Qwen multimodal "
-            "reasoning on the image-caption pair. CLIP alignment, "
-            "alignment classification, and external evidence "
-            "retrieval were intentionally excluded."
-        )
+        if (
+            qwen_response
+            and isinstance(qwen_response, str)
+            and qwen_response.strip()
+            and "mllm analysis failed" not in qwen_response.lower()
+        ):
+            explanation = qwen_response.strip()
+        else:
+            explanation = "MLLM explanation unavailable"
 
         stages.append(
             PipelineStageResult(
@@ -496,6 +511,7 @@ def run_verification(
     # =========================================================
 
     else:
+        logger.info("[ORCHESTRATOR-BOUNDARY] proposed mode: executing full pipeline")
 
         # -----------------------------------------------------
         # 2. CLIP alignment
@@ -555,16 +571,22 @@ def run_verification(
         # 4. Qwen reasoning
         # -----------------------------------------------------
 
+        logger.info("[ORCHESTRATOR-BOUNDARY] proposed mode: invoking _run_qwen()")
         qwen_response = _run_qwen(
             image_bytes=image_bytes,
             filename=filename,
             caption=caption,
         )
+        structured_qwen_prediction = extract_qwen_prediction(qwen_response)
 
         stages.append(
             PipelineStageResult(
                 stage="mllm_reasoning",
-                status="completed",
+                status=(
+                    "failed"
+                    if "mllm analysis failed:" in qwen_response.lower()
+                    else "completed"
+                ),
                 detail=qwen_response[:1000],
             )
         )
@@ -690,6 +712,12 @@ def run_verification(
         else "Custom Pair"
     )
 
+    logger.info(
+        "[ORCHESTRATOR-BOUNDARY] run_verification() completed: final_prediction='%s', confidence=%.2f",
+        final_prediction,
+        final_confidence,
+    )
+
     return VerificationResult(
         id=unique_id,
 
@@ -703,6 +731,9 @@ def run_verification(
 
         alignment_score=clip_score,
         alignmentScore=clip_score,
+
+        qwen_prediction=structured_qwen_prediction,
+        qwenPrediction=structured_qwen_prediction,
 
         reason=reason,
 

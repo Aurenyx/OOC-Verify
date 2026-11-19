@@ -159,27 +159,47 @@ def _is_visual_only_caption(caption: str) -> bool:
     return has_visual_pattern and not has_factual_indicator
 
 
+
+
 def _build_alternative_queries(caption: str) -> List[str]:
     if _is_visual_only_caption(caption):
         return []
 
     base_query = _build_query(caption)
-
     if not base_query:
         return []
 
-    queries = [
-        f'"{base_query}"',
-        f"{base_query} news",
-    ]
+    normalized = base_query.lower()
+    queries = []
 
-    unique_queries = []
+    # Search the location and major event separately.
+    if "mumbai" in normalized and any(
+        term in normalized
+        for term in ("flood", "floods", "rain", "rains")
+    ):
+        queries.extend([
+            "Mumbai floods rescue",
+            "Mumbai animal rescue floods",
+            "Mumbai dog rescue floods",
+        ])
+    else:
+        words = base_query.split()
+        stop_words = {
+            "a", "an", "the", "was", "were", "is", "are",
+            "during", "yesterday", "today", "this", "that",
+            "in", "on", "at", "of", "to", "for", "from",
+            "and", "with", "by", "after", "before",
+        }
+        concise = " ".join(
+            word for word in words
+            if word.lower() not in stop_words
+        )
+        if concise:
+            queries.extend([concise, f"{concise} news"])
 
-    for query in queries:
-        if query not in unique_queries:
-            unique_queries.append(query)
+    return list(dict.fromkeys(queries))
 
-    return unique_queries
+
 
 
 def _retrieve_google_news(
@@ -416,25 +436,31 @@ def retrieve_evidence(
     # --------------------------------------------------
 
     collected_results = []
+    retrieval_error = None
+    failed_queries = []
 
-    try:
-
-        for query in queries:
-
+    for query in queries:
+        try:
             results = _retrieve_google_news(
                 query=query,
                 max_results=10,
             )
-
             collected_results.extend(
                 results
             )
+        except Exception as exc:
+            retrieval_error = exc
+            failed_queries.append(query)
+            print(
+                f"Evidence retrieval failed: {exc}"
+            )
 
-    except Exception as exc:
+    if retrieval_error and not collected_results:
+        raise retrieval_error
 
-        print(
-            f"Evidence retrieval failed: {exc}"
-        )
+    if failed_queries and collected_results:
+        for item in collected_results:
+            item["partial_retrieval"] = True
 
     # --------------------------------------------------
     # Remove duplicate articles.

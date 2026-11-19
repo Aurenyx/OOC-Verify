@@ -6,7 +6,18 @@ import {
 } from './mock-data';
 
 // Default to environment variable, then fallback to deployed Render backend
-const API_BASE_URL = 'https://ooc-verify.onrender.com';
+
+
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('.trycloudflare.com') ||
+      (window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'))
+    ? 'https://facts-exam-scenarios-algorithm.trycloudflare.com'
+    : 'http://127.0.0.1:8001');
+
 
 export interface BackendPipelineStage {
   stage: string;

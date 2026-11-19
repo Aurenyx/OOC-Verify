@@ -1,10 +1,14 @@
+import logging
 import mimetypes
 import uuid
 
 from app.schemas.verification import (
+    EvidenceItem,
     PipelineStageResult,
     VerificationResult,
 )
+from app.services.evidence_analysis_service import analyze_evidence
+from app.services.evidence_service import retrieve_evidence
 from app.services.openrouter_service import analyze_remote_image
 
 import os
@@ -14,6 +18,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 
 from app.config import settings
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
 
@@ -111,8 +117,17 @@ async def verify_claim(
             ),
         )
 
+    mode = os.getenv("OOC_VERIFY_MODE", "local").strip().lower()
+    logger.info(
+        "[ROUTE-BOUNDARY] POST /api/v1/verify: filename='%s', mode='%s', configuration='%s'",
+        image.filename,
+        mode,
+        configuration,
+    )
+
     # Remote demo mode: use OpenRouter without local CLIP/Qwen.
-    if os.getenv("OOC_VERIFY_MODE", "local").strip().lower() == "remote":
+    if mode == "remote":
+        logger.info("[ROUTE-BOUNDARY] Routing to remote OpenRouter path")
         try:
             content_type = (
                 image.content_type
@@ -190,6 +205,110 @@ async def verify_claim(
         reason = remote_result["reason"]
         visual_evidence = remote_result["visual_evidence"]
 
+        evidence_items = []
+        retrieval_status = "skipped"
+        retrieval_detail = "No external evidence articles found for the caption claim."
+        retrieval_score = 0.0
+
+        try:
+            raw_evidence = retrieve_evidence(
+                caption=trimmed_caption,
+                max_results=5,
+            )
+
+            evidence_not_required = (
+                len(raw_evidence) == 1
+                and raw_evidence[0].get("title") == "No external evidence required"
+            )
+
+            if evidence_not_required:
+                retrieval_status = "skipped"
+                retrieval_detail = (
+                    "External evidence retrieval was not required "
+                    "for this primarily visual caption."
+                )
+                retrieval_score = 0.0
+                evidence_items = []
+            elif not raw_evidence:
+                retrieval_status = "skipped"
+                retrieval_detail = (
+                    "No external evidence articles found for the caption claim."
+                )
+                retrieval_score = 0.0
+                evidence_items = []
+            else:
+                is_partial_retrieval = any(
+                    bool(item.get("partial_retrieval"))
+                    for item in raw_evidence
+                    if isinstance(item, dict)
+                )
+
+                candidate_items = [
+                    item
+                    for item in raw_evidence
+                    if isinstance(item, dict)
+                    and item.get("url")
+                    and item.get("title")
+                    and item.get("title") != "No external evidence required"
+                ]
+
+                if not candidate_items:
+                    retrieval_status = "skipped"
+                    retrieval_detail = (
+                        "No external evidence articles found for the caption claim."
+                    )
+                    retrieval_score = 0.0
+                    evidence_items = []
+                else:
+                    analyzed = analyze_evidence(
+                        caption=trimmed_caption,
+                        evidence_items=candidate_items,
+                    )
+                    validated_items = []
+                    for item in analyzed:
+                        try:
+                            validated_items.append(
+                                EvidenceItem(
+                                    source=item.get("source") or "Google News",
+                                    title=item.get("title") or "",
+                                    publishedDate=item.get("publishedDate") or "",
+                                    retrievedDate=item.get("retrievedDate") or "",
+                                    relation=item.get("relation") or "insufficient",
+                                    relevance=float(item.get("relevance", 0.0)),
+                                    excerpt=item.get("excerpt") or "",
+                                    url=item.get("url") or "",
+                                )
+                            )
+                        except Exception:
+                            continue
+
+                    if validated_items:
+                        evidence_items = validated_items
+                        retrieval_status = "completed"
+                        if is_partial_retrieval:
+                            retrieval_detail = (
+                                f"Retrieved and analyzed {len(evidence_items)} "
+                                "external evidence article(s) (partial retrieval: one or more search queries failed)."
+                            )
+                        else:
+                            retrieval_detail = (
+                                f"Retrieved and analyzed {len(evidence_items)} "
+                                "external evidence article(s)."
+                            )
+                        retrieval_score = float(len(evidence_items))
+                    else:
+                        retrieval_status = "skipped"
+                        retrieval_detail = (
+                            "No valid external evidence articles found for the caption claim."
+                        )
+                        retrieval_score = 0.0
+                        evidence_items = []
+        except Exception as exc:
+            retrieval_status = "failed"
+            retrieval_detail = f"External evidence retrieval failed: {str(exc)}"
+            retrieval_score = None
+            evidence_items = []
+
         stages = [
             PipelineStageResult(
                 stage="input_validation",
@@ -206,11 +325,9 @@ async def verify_claim(
             ),
             PipelineStageResult(
                 stage="evidence_retrieval",
-                status="skipped",
-                detail=(
-                    "External evidence retrieval was not performed. "
-                    "This result assesses visual consistency only."
-                ),
+                status=retrieval_status,
+                detail=retrieval_detail,
+                score=retrieval_score,
             ),
             PipelineStageResult(
                 stage="final_decision",
@@ -246,8 +363,10 @@ async def verify_claim(
             clipScore=None,
             alignment_score=None,
             alignmentScore=None,
+            qwen_prediction=None,
+            qwenPrediction=None,
             reason=reason,
-            evidence=[],
+            evidence=evidence_items,
             explanation=explanation,
             inconsistency_type=inconsistency_type,
             inconsistencyType=inconsistency_type,
@@ -261,6 +380,10 @@ async def verify_claim(
     # 5. Execute pipeline orchestrator with CLIP alignment
     from app.pipeline.orchestrator import run_verification
 
+    logger.info(
+        "[ROUTE-BOUNDARY] Calling orchestrator.run_verification (config='%s')",
+        configuration,
+    )
     try:
         result = run_verification(
             image_bytes=contents,
@@ -269,7 +392,12 @@ async def verify_claim(
             dataset=dataset,
             configuration=configuration,
         )
+        logger.info(
+            "[ROUTE-BOUNDARY] orchestrator.run_verification completed with prediction='%s'",
+            result.prediction,
+        )
     except Exception as exc:
+        logger.error("[ROUTE-BOUNDARY] Verification pipeline failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Verification pipeline failed: {str(exc)}",

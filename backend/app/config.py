@@ -16,11 +16,14 @@ class Settings:
     DEFAULT_CORS_ORIGINS: str = (
         f"{os.getenv('FRONTEND_ORIGIN', 'http://localhost:5173')},"
         "https://ooc-verify-1.onrender.com,"
+        "https://adjust-hire-candle-signals.trycloudflare.com,"
         "http://127.0.0.1:5173,"
+        "http://192.168.1.12:5173,"
         "http://localhost:3000,"
         "http://127.0.0.1:3000,"
         "http://localhost:5000"
     )
+    
     CORS_ORIGINS: List[str] = list(
         dict.fromkeys(
             origin.strip()
